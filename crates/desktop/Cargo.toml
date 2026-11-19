@@ -1,0 +1,17 @@
+[package]
+name = "messenger-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gpui = "=0.2.2"
+gpui-component = "=0.5.1"
+client-core = { path = "../client-core" }
+shared-proto = { path = "../shared-proto" }
+anyhow = "1"
+directories = "6"
+gpui-component-assets = "=0.5.1"
+chrono = "0.4"
+serde.workspace = true
+serde_json.workspace = true
