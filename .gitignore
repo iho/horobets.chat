@@ -28,3 +28,18 @@ graft
 # Runtime workspace databases and blobs
 /data/
 .ignore
+# Skip, Xcode, Gradle and generated Rust mobile bindings
+mobile/.build/
+mobile/.swiftpm/
+mobile/Android/.gradle/
+mobile/Android/.kotlin/
+mobile/Android/app/build/
+mobile/Android/local.properties
+mobile/Android/keystore.properties
+mobile/Android/app/src/main/jniLibs/
+mobile/Bridge/MessengerCoreFFI.xcframework/
+mobile/Bridge/Headers/
+mobile/Bridge/Sources/MessengerCore/Generated.swift
+mobile/Sources/MessengerApp/Skip/messenger_mobile.kt
+**/xcuserdata/
+*.xcuserstate

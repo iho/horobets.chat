@@ -93,6 +93,6 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 Client tests cover atomic optimistic reconciliation, FTS changes/deletions, workspace isolation, a two-user live conversation with threads/reactions, and an offline outbox surviving an app restart before reconnecting exactly once. Additional tests cover handle uniqueness and validation, opposite DM requests racing to one conversation, fixed two-person DM membership, private-history recovery after invitation, cache/search removal after revocation, concurrent writers, file access, and message ownership.
 
-Notification delivery, presence indicators, and rich-text WYSIWYG editing depend on further product/backend work. The connection pill reports transport state, not user presence. UniFFI/mobile exports are a later milestone. No 120 FPS or search-latency benchmark is claimed.
+Notification delivery, presence indicators, and rich-text WYSIWYG editing depend on further product/backend work. The connection pill reports transport state, not user presence. The Skip mobile client uses the same engine through the UniFFI bridge; see [mobile setup](../../mobile/README.md). No 120 FPS or search-latency benchmark is claimed.
 
 The pinned GPUI Component dependency is vendored with a small text-link routing hook so internal links open in this window while external links keep opening in the browser. See `vendor/gpui-component/PATCHES.md`.

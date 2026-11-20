@@ -1,0 +1,8 @@
+# Generated UniFFI Kotlin beside this file is included by Skip.
+skip:
+  mode: 'transpiled'
+build:
+  contents:
+    - block: 'dependencies'
+      contents:
+        - 'implementation("net.java.dev.jna:jna:5.17.0@aar")'

@@ -103,6 +103,66 @@ async fn native_engine_delivers_threads_reactions_and_offline_outbox_after_resta
         s.connected && s.channel.is_some() && s.avatars.contains_key(&alice_id)
     })
     .await;
+    // Profile edits must reach other users AND the editor's other devices via
+    // the live catalog event, without Refresh or waiting for the 30-second poll.
+    let alice_other = ClientEngine::start(temp.path().join("alice-other-device")).unwrap();
+    alice_other
+        .send(Command::Authenticate {
+            server: server.clone(),
+            email: "alice@example.com".into(),
+            password: "correct horse battery staple".into(),
+            register: false,
+        })
+        .unwrap();
+    wait(&alice_other, |s| s.connected && s.channel.is_some()).await;
+    alice
+        .send(Command::SaveProfile {
+            display_name: "Alice Updated".into(),
+            handle: "alice_updated".into(),
+            bio: Some("Updated on another device".into()),
+        })
+        .unwrap();
+    for client in [&bob, &alice_other] {
+        let state = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait(client, |s| {
+                s.users.iter().any(|u| {
+                    u.id == alice_id
+                        && u.display_name == "Alice Updated"
+                        && u.handle.as_deref() == Some("alice_updated")
+                })
+            }),
+        )
+        .await
+        .expect("profile update was not broadcast promptly");
+        assert!(
+            state
+                .people
+                .iter()
+                .any(|m| m.user.id == alice_id && m.user.bio == "Updated on another device")
+        );
+    }
+    let old_avatar = profile.me.unwrap().avatar_url;
+    // A replacement generates a different immutable URL and must be fetched
+    // into every client's authenticated image cache before publishing its view.
+    alice.send(Command::UploadAvatar(photo.clone())).unwrap();
+    for client in [&bob, &alice_other] {
+        let state = tokio::time::timeout(
+            Duration::from_secs(5),
+            wait(client, |s| {
+                s.users.iter().any(|u| {
+                    u.id == alice_id && u.avatar_url.is_some() && u.avatar_url != old_avatar
+                }) && s.avatars.get(&alice_id).is_some_and(|path| path.is_file())
+            }),
+        )
+        .await
+        .expect("avatar replacement was not broadcast promptly");
+        if state.user_id.as_deref() == Some(&alice_id) {
+            assert_eq!(state.me.as_ref().unwrap().display_name, "Alice Updated");
+            assert_ne!(state.me.as_ref().unwrap().avatar_url, old_avatar);
+        }
+    }
+    drop(alice_other);
     send(&alice, "SQLite from Alice", None);
     let received = wait(&bob, |s| {
         s.messages

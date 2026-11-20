@@ -16,25 +16,25 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
     tungstenite::{Message, client::IntoClientRequest},
 };
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum OutboxStatus {
     Sent,
     Pending,
     Failed(String),
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ReactionCount {
     pub emoji: String,
     pub count: i64,
     pub mine: bool,
 }
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CachedMessage {
     pub message: MessageDto,
     pub status: OutboxStatus,
     pub reactions: Vec<ReactionCount>,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
     pub server: String,
     pub user_id: Option<String>,
@@ -80,6 +80,8 @@ impl Snapshot {
         matches!(self.role(), "owner" | "admin")
     }
 }
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum Command {
     Authenticate {
         server: String,

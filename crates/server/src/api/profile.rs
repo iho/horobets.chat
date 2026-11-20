@@ -48,6 +48,7 @@ pub async fn upload_avatar(
     let uid = u.clone();
     let url = format!("/api/v1/users/{u}/avatar/{key}");
     app.db.global.write(move|c|{let tx=c.transaction()?;tx.execute("INSERT INTO user_avatars VALUES(?,?,?) ON CONFLICT(user_id) DO UPDATE SET storage_key=excluded.storage_key,updated_at=excluded.updated_at",params![uid,key,crate::now()])?;tx.execute("UPDATE users SET avatar_url=? WHERE id=?",params![url,uid])?;tx.commit()?;Ok(())}).await?;
+    app.db.notify_profile_changed(u.clone()).await?;
     Ok(Json(user(&app, u).await?))
 }
 pub async fn avatar(
@@ -137,5 +138,6 @@ pub async fn update(
  tx.execute("INSERT INTO user_handles VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET handle=excluded.handle",params![uid,handle]).map_err(|e|match e {rusqlite::Error::SqliteFailure(ref code,_) if code.code==rusqlite::ErrorCode::ConstraintViolation=>Error::Bad("That handle is already taken".into()),_=>e.into()})?;
  }
  tx.execute("UPDATE users SET display_name=? WHERE id=?",params![name,uid])?;tx.commit()?;Ok(())}).await?;
+    app.db.notify_profile_changed(u.clone()).await?;
     Ok(Json(user(&app, u).await?))
 }

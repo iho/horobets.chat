@@ -11,6 +11,8 @@ cargo run -p messenger-server -- --data-dir ./data --listen 127.0.0.1:3000
 
 Keep the same secret across restarts to preserve sessions. Tokens expire after seven days. The binary accepts `MESSENGER_DATA_DIR` and `MESSENGER_LISTEN` as alternatives to CLI arguments. `RUST_LOG=info` controls logging. SIGINT/SIGTERM stop the HTTP server gracefully.
 
+On Unix, startup raises the process’s soft open-file limit to 8192 when the inherited hard limit allows it, and logs the effective limits. If it warns about a lower hard limit, increase your shell or service’s limit before starting the server. This budget covers network sockets and SQLite files.
+
 ```sh
 cargo check --workspace
 cargo test --workspace
@@ -25,6 +27,19 @@ cargo run -p messenger-desktop
 ```
 
 Sign in to the running backend, then create a workspace and channel from the sidebar. The native client includes threaded Markdown conversations, reactions, editing, file upload/download, local full-text search (Cmd+K / Ctrl+K), and an offline SQLite outbox with reconnect recovery. See [desktop setup and controls](crates/desktop/README.md).
+
+## Mobile apps
+
+The Skip project in [mobile/](mobile/README.md) shares SwiftUI screens between iOS and Android Compose. `crates/mobile-core` exposes the existing Rust engine through UniFFI, including callback snapshots, SQLite history/search, reconnection, and the offline outbox.
+
+```sh
+./scripts/build-mobile.sh --all
+# iOS: open mobile/Project.xcworkspace in Xcode
+# Android (with ANDROID_HOME set):
+gradle -p mobile/Android assembleDebug
+```
+
+See [mobile setup, supported features, and validation](mobile/README.md) for toolchain installation, simulator server addresses, native build artifacts, and the initial mobile client's limits.
 
 ## API
 
@@ -67,7 +82,7 @@ curl -s localhost:3000/api/v1/workspaces \
 
 ## Profiles, handles, and appearance
 
-Open **Settings** in the desktop sidebar to set your display name and unique `@handle`, change your profile picture, and select Dark or Light appearance. Handles are case-insensitive, normalized to lowercase, and contain 3–32 ASCII letters, digits, or underscores starting with a letter. Clearing a handle releases it. Appearance is saved per device; profiles and handles are stored on the server. Existing accounts and caches migrate automatically without losing history.
+Open **Settings** in the desktop sidebar to set your display name and unique `@handle`, change your profile picture, and select Dark or Light appearance. Handles are case-insensitive, normalized to lowercase, and contain 3–32 ASCII letters, digits, or underscores starting with a letter. Clearing a handle releases it. Appearance is saved per device; profiles and handles are stored on the server. Successful profile and photo updates immediately notify connected clients in every shared workspace, including your other devices; reconnect refreshes missed updates. Existing accounts and caches migrate automatically without losing history.
 
 Use **+** beside Channels and choose Private, then **Members** in the channel header to add teammates. Use **+** beside Direct Messages to search workspace teammates by name or handle. Repeated requests for the same pair reuse the existing DM.
 
@@ -100,4 +115,4 @@ S3 configuration uses the [object_store AWS environment configuration](https://d
 
 ## Scope
 
-This implements the backend, shared protocol, offline client engine, and GPUI desktop client. Mobile and UniFFI exports are subsequent milestones. Magic links, push delivery, presence tracking, session revocation, and upload garbage collection are not implemented. The current manager retains opened workspaces until shutdown; idle eviction is a future scaling improvement. FTS latency and message throughput have not been benchmarked. Use one server process per data directory; actor serialization is in-process.
+This implements the backend, shared protocol, offline client engine, GPUI desktop client, and initial Skip iOS/Android client with UniFFI bindings. Magic links, push delivery, presence tracking, session revocation, and upload garbage collection are not implemented. The current manager retains opened workspaces until shutdown; idle eviction is a future scaling improvement. FTS latency and message throughput have not been benchmarked. Use one server process per data directory; actor serialization is in-process.

@@ -4,6 +4,66 @@ use messenger_server::{
 };
 use shared_proto::ClientEvent;
 #[tokio::test]
+async fn profile_notifications_reach_all_shared_workspaces_only() {
+    let temp = tempfile::tempdir().unwrap();
+    let manager = Manager::open(temp.path()).unwrap();
+    let first = id();
+    let second = id();
+    let unopened = id();
+    let unrelated = id();
+    let members = vec![first.clone(), second.clone(), unopened.clone()];
+    manager
+        .global
+        .write(move |c| {
+            c.execute(
+                "INSERT INTO users VALUES('alice','alice@example.test','unused','Alice',NULL,0)",
+                [],
+            )?;
+            for w in members {
+                c.execute("INSERT INTO workspaces VALUES(?1,?1,?1,?1,0)", [&w])?;
+                c.execute(
+                    "INSERT INTO workspace_members VALUES(?,'alice','owner',0)",
+                    [&w],
+                )?;
+            }
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let mut a = manager.workspace(&first).await.unwrap().events.subscribe();
+    let mut b = manager.workspace(&second).await.unwrap().events.subscribe();
+    let mut outsider = manager
+        .workspace(&unrelated)
+        .await
+        .unwrap()
+        .events
+        .subscribe();
+    manager
+        .notify_profile_changed("alice".into())
+        .await
+        .unwrap();
+    assert_eq!(
+        a.try_recv().unwrap(),
+        shared_proto::ServerEvent::ChannelsChanged
+    );
+    assert_eq!(
+        b.try_recv().unwrap(),
+        shared_proto::ServerEvent::ChannelsChanged
+    );
+    assert!(matches!(
+        outsider.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+    assert!(
+        !temp
+            .path()
+            .join("workspaces")
+            .join(format!("{unopened}.db"))
+            .exists()
+    );
+}
+
+#[tokio::test]
 async fn concurrent_writes_are_serialized_and_persisted() {
     let temp = tempfile::tempdir().unwrap();
     let manager = std::sync::Arc::new(Manager::open(temp.path()).unwrap());

@@ -1,4 +1,5 @@
 use clap::Parser;
+mod limits;
 #[derive(Parser)]
 struct Config {
     #[arg(long, env = "MESSENGER_DATA_DIR", default_value = "data")]
@@ -18,6 +19,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
     let c = Config::parse();
+    limits::configure();
     let mut app = messenger_server::App::open(c.data_dir, &c.jwt_secret)?;
     if c.blob_store == "s3" {
         #[cfg(feature = "s3")]

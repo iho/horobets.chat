@@ -1,0 +1,31 @@
+[package]
+name = "messenger-mobile"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "messenger_mobile"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+client-core = { path = "../client-core" }
+uniffi = "=0.32.2"
+serde_json.workspace = true
+thiserror = "2"
+async-channel = "2"
+
+[[bin]]
+name = "messenger-bindgen"
+path = "src/bin/bindgen.rs"
+required-features = ["bindgen"]
+
+[dev-dependencies]
+image.workspace = true
+tempfile = "3"
+messenger-server = { path = "../server" }
+tokio.workspace = true
+axum = "0.8"

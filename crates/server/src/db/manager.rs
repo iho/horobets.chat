@@ -129,6 +129,28 @@ impl Manager {
         .map_err(|e| Error::Internal(e.into()))??;
         Ok(self.workspaces.entry(key).or_insert(db).clone())
     }
+    pub async fn notify_profile_changed(&self, user: String) -> Result<()> {
+        let workspaces: Vec<String> = self
+            .global
+            .read(move |c| {
+                let mut statement =
+                    c.prepare("SELECT workspace_id FROM workspace_members WHERE user_id=?")?;
+                Ok(statement
+                    .query_map([user], |row| row.get(0))?
+                    .collect::<rusqlite::Result<_>>()?)
+            })
+            .await?;
+        for workspace in workspaces {
+            // Only opened workspaces can have live subscribers. Do not open extra
+            // databases just to notify them; reconnect already refreshes profiles.
+            if let Some(db) = self.workspaces.get(&workspace) {
+                // Existing clients refresh people, their own profile and cached
+                // avatars on this catalog invalidation event.
+                let _ = db.events.send(ServerEvent::ChannelsChanged);
+            }
+        }
+        Ok(())
+    }
     pub async fn authorize(&self, w: String, u: String) -> Result<String> {
         self.global
             .read(move |c| {
