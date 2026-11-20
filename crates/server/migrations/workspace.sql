@@ -12,3 +12,9 @@ CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN DELETE F
 CREATE TABLE IF NOT EXISTS events(seq INTEGER PRIMARY KEY AUTOINCREMENT,event_json TEXT NOT NULL);
 
 CREATE TABLE IF NOT EXISTS attachment_previews(attachment_id TEXT PRIMARY KEY REFERENCES attachments(id),storage_key TEXT NOT NULL);
+
+CREATE TABLE IF NOT EXISTS direct_channels(channel_id TEXT PRIMARY KEY REFERENCES channels(id),pair_key TEXT NOT NULL UNIQUE,user_a TEXT NOT NULL,user_b TEXT NOT NULL,CHECK(user_a<>user_b));
+
+CREATE TABLE IF NOT EXISTS saved_channels(user_id TEXT PRIMARY KEY,channel_id TEXT NOT NULL UNIQUE REFERENCES channels(id));
+CREATE TABLE IF NOT EXISTS message_pins(message_id TEXT PRIMARY KEY REFERENCES messages(id),pinned_by TEXT NOT NULL,created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS moderation_actions(seq INTEGER PRIMARY KEY AUTOINCREMENT,channel_id TEXT NOT NULL REFERENCES channels(id),message_id TEXT NOT NULL REFERENCES messages(id),actor_id TEXT NOT NULL,action TEXT NOT NULL,created_at INTEGER NOT NULL);

@@ -1,6 +1,7 @@
 [workspace]
 members = ["crates/shared-proto", "crates/server", "crates/client-core", "crates/desktop"]
 resolver = "2"
+exclude = ["vendor/gpui-component"]
 
 [workspace.package]
 edition = "2024"
@@ -21,3 +22,6 @@ incremental = false
 [profile.test]
 debug = 0
 incremental = false
+
+[patch.crates-io]
+gpui-component = { path = "vendor/gpui-component" }

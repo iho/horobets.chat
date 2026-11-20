@@ -8,7 +8,7 @@ async fn user(app: &App, u: String) -> Result<shared_proto::User> {
         .global
         .read(move |c| {
             c.query_row(
-                "SELECT id,email,display_name,avatar_url,created_at FROM users WHERE id=?",
+                "SELECT id,email,display_name,avatar_url,created_at,(SELECT handle FROM user_handles WHERE user_id=users.id),COALESCE((SELECT bio FROM user_details WHERE user_id=users.id),'') FROM users WHERE id=?",
                 [u],
                 |r| {
                     Ok(shared_proto::User {
@@ -16,7 +16,7 @@ async fn user(app: &App, u: String) -> Result<shared_proto::User> {
                         email: r.get(1)?,
                         display_name: r.get(2)?,
                         avatar_url: r.get(3)?,
-                        created_at: r.get(4)?,
+                        created_at: r.get(4)?,handle:r.get(5)?,bio:r.get(6)?,
                     })
                 },
             )
@@ -90,4 +90,52 @@ pub async fn preview(
         ],
         app.blobs.get(&key).await?,
     ))
+}
+
+#[derive(Deserialize)]
+pub struct ProfileUpdate {
+    display_name: String,
+    handle: Option<String>,
+    bio: Option<String>,
+}
+pub async fn update(
+    State(app): State<App>,
+    h: HeaderMap,
+    Json(v): Json<ProfileUpdate>,
+) -> Result<Json<shared_proto::User>> {
+    let u = app.auth.user(&h)?;
+    let name = v.display_name.trim().to_owned();
+    if name.is_empty() || name.len() > 200 {
+        return Err(Error::Bad(
+            "Display name must contain 1–200 characters".into(),
+        ));
+    }
+    let handle = v
+        .handle
+        .unwrap_or_default()
+        .trim()
+        .trim_start_matches('@')
+        .to_ascii_lowercase();
+    if !handle.is_empty()
+        && (!(3..=32).contains(&handle.len())
+            || !handle.as_bytes()[0].is_ascii_lowercase()
+            || !handle
+                .bytes()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'_'))
+    {
+        return Err(Error::Bad(
+            "Use 3–32 letters, numbers, or underscores, starting with a letter".into(),
+        ));
+    }
+    if v.bio.as_ref().is_some_and(|bio| bio.len() > 2000) {
+        return Err(Error::Bad("Bio must be at most 2000 bytes".into()));
+    }
+    let uid = u.clone();
+    app.db.global.write(move|c|{let tx=c.transaction()?;
+ if let Some(bio)=v.bio {tx.execute("INSERT INTO user_details VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET bio=excluded.bio",params![uid,bio.trim()])?;}
+ if handle.is_empty(){tx.execute("DELETE FROM user_handles WHERE user_id=?",[&uid])?;}else{
+ tx.execute("INSERT INTO user_handles VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET handle=excluded.handle",params![uid,handle]).map_err(|e|match e {rusqlite::Error::SqliteFailure(ref code,_) if code.code==rusqlite::ErrorCode::ConstraintViolation=>Error::Bad("That handle is already taken".into()),_=>e.into()})?;
+ }
+ tx.execute("UPDATE users SET display_name=? WHERE id=?",params![name,uid])?;tx.commit()?;Ok(())}).await?;
+    Ok(Json(user(&app, u).await?))
 }

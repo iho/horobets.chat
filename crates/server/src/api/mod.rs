@@ -1,3 +1,5 @@
+mod conversations;
+mod management;
 mod profile;
 use crate::{
     App, Error, Result,
@@ -19,7 +21,7 @@ pub fn router(app: App) -> Router {
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/api/v1/auth/register", post(register))
         .route("/api/v1/auth/login", post(login))
-        .route("/api/v1/users/me", get(profile::me))
+        .route("/api/v1/users/me", get(profile::me).patch(profile::update))
         .route("/api/v1/users/me/avatar", post(profile::upload_avatar))
         .route("/api/v1/users/{u}/avatar/{key}", get(profile::avatar))
         .route(
@@ -43,6 +45,40 @@ pub fn router(app: App) -> Router {
             post(upload).get(attachments),
         )
         .route("/api/v1/workspaces/{w}/attachments/{a}", get(download))
+        .route(
+            "/api/v1/workspaces/{w}/directs",
+            post(conversations::direct),
+        )
+        .route(
+            "/api/v1/workspaces/{w}/channels/{c}/members",
+            get(conversations::members).post(conversations::add_member),
+        )
+        .route(
+            "/api/v1/workspaces/{w}/channels/{c}/members/{u}",
+            axum::routing::delete(conversations::remove_member),
+        )
+        .route(
+            "/api/v1/workspaces/{w}",
+            axum::routing::patch(management::workspace),
+        )
+        .route(
+            "/api/v1/workspaces/{w}/channels/{c}",
+            axum::routing::patch(management::channel),
+        )
+        .route("/api/v1/workspaces/{w}/people", get(management::people))
+        .route(
+            "/api/v1/workspaces/{w}/people/{u}",
+            get(management::profile),
+        )
+        .route(
+            "/api/v1/workspaces/{w}/people/{u}/role",
+            axum::routing::patch(management::role),
+        )
+        .route("/api/v1/workspaces/{w}/pins", get(management::pins))
+        .route(
+            "/api/v1/workspaces/{w}/moderation",
+            get(management::activity),
+        )
         .route("/api/v1/workspaces/{w}/ws", get(crate::ws::upgrade))
         .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
         .with_state(app)
@@ -215,10 +251,14 @@ async fn create_channel(
         name: v.name,
         topic: v.topic,
         is_private: v.is_private,
+        is_direct: false,
+        is_saved: false,
+        peer_user_id: None,
         created_by: u.clone(),
         created_at: crate::now(),
     };
     let out = ch.clone();
+    let hub = db.events.clone();
     db.write(move |c| {
         let tx = c.transaction()?;
         tx.execute(
@@ -237,6 +277,7 @@ async fn create_channel(
             params![ch.id, u],
         )?;
         tx.commit()?;
+        let _ = hub.send(shared_proto::ServerEvent::ChannelsChanged);
         Ok(())
     })
     .await?;
@@ -248,7 +289,7 @@ async fn channels(
     h: HeaderMap,
 ) -> Result<Json<Vec<Channel>>> {
     let (u, db) = context(&app, &h, &w).await?;
-    db.read(move|c|{let mut s=c.prepare("SELECT id,name,topic,is_private,created_by,created_at FROM channels c WHERE is_private=0 OR EXISTS(SELECT 1 FROM channel_members m WHERE m.channel_id=c.id AND m.user_id=?) ORDER BY created_at")?;Ok(Json(s.query_map([u],|r|Ok(Channel{id:r.get(0)?,name:r.get(1)?,topic:r.get(2)?,is_private:r.get(3)?,created_by:r.get(4)?,created_at:r.get(5)?}))?.collect::<std::result::Result<_,_>>()?))}).await
+    db.read(move|c|{let mut s=c.prepare("SELECT c.id,c.name,c.topic,c.is_private,c.created_by,c.created_at,d.channel_id IS NOT NULL,CASE WHEN d.user_a=?1 THEN d.user_b ELSE d.user_a END,EXISTS(SELECT 1 FROM saved_channels s WHERE s.channel_id=c.id) FROM channels c LEFT JOIN direct_channels d ON d.channel_id=c.id WHERE c.is_private=0 OR EXISTS(SELECT 1 FROM channel_members m WHERE m.channel_id=c.id AND m.user_id=?1) ORDER BY c.created_at")?;Ok(Json(s.query_map([u],conversations::channel)?.collect::<rusqlite::Result<_>>()?))}).await
 }
 #[derive(Deserialize, Default)]
 struct Page {
@@ -460,8 +501,8 @@ async fn members(
 ) -> Result<Json<Vec<shared_proto::User>>> {
     let u = app.auth.user(&h)?;
     app.db.authorize(w.clone(), u).await?;
-    app.db.global.read(move|c|{let mut s=c.prepare("SELECT u.id,u.email,u.display_name,u.avatar_url,u.created_at FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=? ORDER BY u.display_name")?;
- Ok(Json(s.query_map([w],|r|Ok(shared_proto::User{id:r.get(0)?,email:r.get(1)?,display_name:r.get(2)?,avatar_url:r.get(3)?,created_at:r.get(4)?}))?.collect::<rusqlite::Result<_>>()?))}).await
+    app.db.global.read(move|c|{let mut s=c.prepare("SELECT u.id,u.email,u.display_name,u.avatar_url,u.created_at,(SELECT handle FROM user_handles WHERE user_id=u.id),COALESCE((SELECT bio FROM user_details WHERE user_id=u.id),'') FROM users u JOIN workspace_members m ON m.user_id=u.id WHERE m.workspace_id=? ORDER BY u.display_name")?;
+ Ok(Json(s.query_map([w],|r|Ok(shared_proto::User{id:r.get(0)?,email:r.get(1)?,display_name:r.get(2)?,avatar_url:r.get(3)?,created_at:r.get(4)?,handle:r.get(5)?,bio:r.get(6)?}))?.collect::<rusqlite::Result<_>>()?))}).await
 }
 
 #[derive(Deserialize)]

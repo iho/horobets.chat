@@ -13,15 +13,30 @@ pub enum Modal {
     Channel,
     Invite,
     Edit(String),
+    Direct,
+    Members,
+    Settings,
+    Reaction(String),
+    Manage,
+    Pins,
+    Profile(String),
+    ChannelEdit(String),
+    ConfirmDelete(String),
 }
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct PaneSizes {
+    #[serde(default = "default_dark_mode")]
+    pub dark_mode: bool,
     pub sidebar: f32,
     pub thread: f32,
+}
+fn default_dark_mode() -> bool {
+    true
 }
 impl Default for PaneSizes {
     fn default() -> Self {
         Self {
+            dark_mode: true,
             sidebar: 240.,
             thread: 360.,
         }
@@ -38,10 +53,24 @@ pub struct Messenger {
     pub password: Entity<InputState>,
     pub composer: Entity<InputState>,
     pub reply: Entity<InputState>,
+    pub markdown_preview: [bool; 2],
+    pub completion_selection: [usize; 2],
+    pub completion_scroll: [UniformListScrollHandle; 2],
+    pub completion_dismissed: [bool; 2],
     pub topic: Entity<InputState>,
     pub search: Entity<InputState>,
     pub name: Entity<InputState>,
     pub slug: Entity<InputState>,
+    pub profile_name: Entity<InputState>,
+    pub profile_handle: Entity<InputState>,
+    pub profile_bio: Entity<InputState>,
+    pub manage_name: Entity<InputState>,
+    pub manage_slug: Entity<InputState>,
+    pub edit_topic: Entity<InputState>,
+    pub private_channel: bool,
+    pub reaction_selection: usize,
+    pub reaction_focus: FocusHandle,
+    _modal_subscription: Option<Subscription>,
     pub register: bool,
     pub modal: Modal,
     pub feed: ListState,
@@ -75,6 +104,26 @@ impl Messenger {
         } else {
             360.
         };
+        gpui_component::Theme::change(
+            if pane_sizes.dark_mode {
+                gpui_component::ThemeMode::Dark
+            } else {
+                gpui_component::ThemeMode::Light
+            },
+            Some(window),
+            cx,
+        );
+        ui::configure_controls(cx);
+        let profile_name = cx.new(|cx| InputState::new(window, cx).placeholder("Display name"));
+        let profile_handle = cx.new(|cx| InputState::new(window, cx).placeholder("ihor"));
+        let profile_bio = cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("About you")
+                .auto_grow(3, 8)
+        });
+        let manage_name = cx.new(|cx| InputState::new(window, cx).placeholder("Workspace name"));
+        let manage_slug = cx.new(|cx| InputState::new(window, cx).placeholder("workspace-slug"));
+        let edit_topic = cx.new(|cx| InputState::new(window, cx).placeholder("Channel topic"));
         let server = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Server URL")
@@ -102,6 +151,24 @@ impl Messenger {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let slug = cx.new(|cx| InputState::new(window, cx).placeholder("workspace-slug"));
         let subscriptions = vec![
+            cx.observe(&composer, |_, _, cx| cx.notify()),
+            cx.observe(&reply, |_, _, cx| cx.notify()),
+            cx.subscribe_in(&composer, window, |this, _, event, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.completion_selection[0] = 0;
+                    this.completion_scroll[0].scroll_to_item(0, ScrollStrategy::Center);
+                    this.completion_dismissed[0] = false;
+                    cx.notify();
+                }
+            }),
+            cx.subscribe_in(&reply, window, |this, _, event, _, cx| {
+                if matches!(event, InputEvent::Change) {
+                    this.completion_selection[1] = 0;
+                    this.completion_scroll[1].scroll_to_item(0, ScrollStrategy::Center);
+                    this.completion_dismissed[1] = false;
+                    cx.notify();
+                }
+            }),
             cx.subscribe_in(&search, window, |this, input, event, _, cx| {
                 if matches!(event, InputEvent::Change) {
                     this.search_selection = 0;
@@ -136,10 +203,27 @@ impl Messenger {
             password,
             composer,
             reply,
+            markdown_preview: [false; 2],
+            completion_selection: [0; 2],
+            completion_scroll: [
+                UniformListScrollHandle::new(),
+                UniformListScrollHandle::new(),
+            ],
+            completion_dismissed: [false; 2],
             topic,
             search,
             name,
             slug,
+            profile_name,
+            profile_handle,
+            profile_bio,
+            manage_name,
+            manage_slug,
+            edit_topic,
+            private_channel: false,
+            reaction_selection: 0,
+            reaction_focus: cx.focus_handle(),
+            _modal_subscription: None,
             search_selection: 0,
             search_scroll: UniformListScrollHandle::new(),
             register: false,
@@ -223,6 +307,67 @@ impl Messenger {
     }
     pub fn open_modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = modal.clone();
+        if matches!(modal, Modal::Manage | Modal::Pins | Modal::Profile(_)) {
+            if modal == Modal::Manage
+                && let Some(w) = self
+                    .snapshot
+                    .workspaces
+                    .iter()
+                    .find(|w| Some(&w.id) == self.snapshot.workspace.as_ref())
+                    .cloned()
+            {
+                self.manage_name
+                    .update(cx, |i, cx| i.set_value(w.name, window, cx));
+                self.manage_slug
+                    .update(cx, |i, cx| i.set_value(w.slug, window, cx));
+            }
+            self.focus.focus(window);
+            cx.notify();
+            return;
+        }
+        if matches!(modal, Modal::ConfirmDelete(_)) {
+            self.focus.focus(window);
+            cx.notify();
+            return;
+        }
+        if matches!(modal, Modal::Reaction(_)) {
+            self.reaction_selection = 0;
+            self.reaction_focus.focus(window);
+            cx.notify();
+            return;
+        }
+        if modal == Modal::Settings {
+            let name = self
+                .snapshot
+                .me
+                .as_ref()
+                .map(|u| u.display_name.clone())
+                .unwrap_or_default();
+            let handle = self
+                .snapshot
+                .me
+                .as_ref()
+                .and_then(|u| u.handle.clone())
+                .unwrap_or_default();
+            self.profile_name
+                .update(cx, |i, cx| i.set_value(name, window, cx));
+            self.profile_handle
+                .update(cx, |i, cx| i.set_value(handle, window, cx));
+            let bio = self
+                .snapshot
+                .me
+                .as_ref()
+                .map(|u| u.bio.clone())
+                .unwrap_or_default();
+            self.profile_bio
+                .update(cx, |i, cx| i.set_value(bio, window, cx));
+            self.profile_name.update(cx, |i, cx| i.focus(window, cx));
+            cx.notify();
+            return;
+        }
+        if modal == Modal::Channel {
+            self.private_channel = false;
+        }
         self.search_selection = 0;
         if modal != Modal::Search {
             self.name = cx.new(|cx| {
@@ -233,12 +378,21 @@ impl Messenger {
                 } else {
                     InputState::new(window, cx).placeholder(if modal == Modal::Invite {
                         "teammate@example.com"
+                    } else if modal == Modal::Direct {
+                        "Search teammates or @handle"
+                    } else if modal == Modal::Members {
+                        "Filter members by name or @handle"
                     } else {
                         "Name"
                     })
                 }
             });
         }
+        self._modal_subscription = Some(cx.subscribe_in(
+            &self.name,
+            window,
+            |_, _, _: &InputEvent, _, cx| cx.notify(),
+        ));
         if modal == Modal::Workspace {
             self.slug.update(cx, |i, cx| i.set_value("", window, cx));
         }
@@ -251,6 +405,20 @@ impl Messenger {
             input.set_value("", window, cx);
             input.focus(window, cx);
         });
+        if let Modal::ChannelEdit(id) = modal
+            && let Some(ch) = self
+                .snapshot
+                .channels
+                .iter()
+                .find(|ch| ch.id == id)
+                .cloned()
+        {
+            self.name
+                .update(cx, |i, cx| i.set_value(ch.name, window, cx));
+            self.edit_topic.update(cx, |i, cx| {
+                i.set_value(ch.topic.unwrap_or_default(), window, cx)
+            });
+        }
         cx.notify();
     }
     pub fn submit_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -263,8 +431,19 @@ impl Messenger {
                 name,
                 slug: self.slug.read(cx).value().to_string(),
             },
-            Modal::Channel => Command::CreateChannel(name),
+            Modal::Channel => {
+                if self.private_channel {
+                    Command::CreatePrivateChannel(name)
+                } else {
+                    Command::CreateChannel(name)
+                }
+            }
             Modal::Invite => Command::Invite(name),
+            Modal::ChannelEdit(id) => Command::EditChannel {
+                id: id.clone(),
+                name,
+                topic: self.edit_topic.read(cx).value().to_string(),
+            },
             Modal::Edit(id) => Command::Event(ClientEvent::EditMessage {
                 message_id: id.clone(),
                 body_md: name,
@@ -323,6 +502,7 @@ impl Messenger {
             },
             cx,
         ) {
+            self.markdown_preview[usize::from(thread)] = false;
             input.update(cx, |input, cx| input.set_value("", window, cx));
             if !thread && let Some(ch) = &self.snapshot.channel {
                 self.drafts.remove(ch);
@@ -330,6 +510,65 @@ impl Messenger {
             if !self.visible.is_empty() {
                 self.feed.scroll_to_reveal_item(self.visible.len() - 1);
             }
+        }
+    }
+    pub fn set_dark_mode(&mut self, dark: bool, window: &mut Window, cx: &mut Context<Self>) {
+        self.pane_sizes.dark_mode = dark;
+        gpui_component::Theme::change(
+            if dark {
+                gpui_component::ThemeMode::Dark
+            } else {
+                gpui_component::ThemeMode::Light
+            },
+            Some(window),
+            cx,
+        );
+        ui::configure_controls(cx);
+        self.save_pane_sizes(cx);
+        cx.notify();
+    }
+    pub fn open_direct(&mut self, user: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(channel) = self
+            .snapshot
+            .channels
+            .iter()
+            .find(|ch| {
+                (ch.is_direct && ch.peer_user_id.as_ref() == Some(&user))
+                    || (ch.is_saved && self.snapshot.user_id.as_ref() == Some(&user))
+            })
+            .cloned()
+        {
+            self.select_channel(channel.id, window, cx);
+            return;
+        }
+        if let Some(ch) = &self.snapshot.channel {
+            self.drafts
+                .insert(ch.clone(), self.composer.read(cx).value().to_string());
+        }
+        self.composer
+            .update(cx, |i, cx| i.set_value("", window, cx));
+        self.topic.update(cx, |i, cx| i.set_value("", window, cx));
+        self.command(Command::OpenDirect(user), cx);
+        self.modal = Modal::None;
+        cx.notify();
+    }
+    pub fn toggle_reaction(
+        &mut self,
+        id: String,
+        emoji: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.command(
+            Command::Event(ClientEvent::ToggleReaction {
+                message_id: id,
+                emoji,
+            }),
+            cx,
+        ) {
+            self.modal = Modal::None;
+            self.focus.focus(window);
+            cx.notify();
         }
     }
     pub fn save_pane_sizes(&mut self, cx: &mut Context<Self>) {
@@ -415,7 +654,36 @@ impl Messenger {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let Modal::Reaction(id) = self.modal.clone() {
+            let count = ui::reactions::CHOICES.len();
+            match event.keystroke.key.as_str() {
+                "left" => self.reaction_selection = self.reaction_selection.saturating_sub(1),
+                "right" => self.reaction_selection = (self.reaction_selection + 1).min(count - 1),
+                "up" => self.reaction_selection = self.reaction_selection.saturating_sub(8),
+                "down" => self.reaction_selection = (self.reaction_selection + 8).min(count - 1),
+                "enter" => {
+                    let emoji = ui::reactions::CHOICES[self.reaction_selection].0;
+                    self.toggle_reaction(id, emoji.into(), window, cx);
+                }
+                _ => return,
+            }
+            cx.stop_propagation();
+            cx.notify();
+            return;
+        }
         if self.modal != Modal::Search {
+            if matches!(
+                self.modal,
+                Modal::Direct
+                    | Modal::Members
+                    | Modal::Settings
+                    | Modal::Manage
+                    | Modal::Pins
+                    | Modal::Profile(_)
+                    | Modal::ConfirmDelete(_)
+            ) {
+                return;
+            }
             if event.keystroke.key == "enter" && !matches!(self.modal, Modal::Edit(_)) {
                 cx.stop_propagation();
                 self.submit_modal(window, cx);
@@ -428,7 +696,11 @@ impl Messenger {
             .snapshot
             .channels
             .iter()
-            .filter(|c| c.name.to_lowercase().contains(&text))
+            .filter(|c| {
+                ui::channel_label(c, &self.snapshot.users)
+                    .to_lowercase()
+                    .contains(&text)
+            })
             .take(8)
             .cloned()
             .collect();
@@ -487,6 +759,7 @@ impl Focusable for Messenger {
 impl Render for Messenger {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let authenticated = self.snapshot.user_id.is_some();
+        let colors = ui::palette(cx);
         div()
             .key_context("Messenger")
             .track_focus(&self.focus)
@@ -494,19 +767,30 @@ impl Render for Messenger {
             .flex()
             .flex_col()
             .relative()
-            .bg(rgb(ui::BG))
-            .text_color(rgb(ui::TEXT))
+            .bg(rgb(colors.bg))
+            .text_color(rgb(colors.text))
             .text_sm()
             .font_family(".SystemUIFont")
             .on_action(cx.listener(Self::quick_search))
             .on_action(cx.listener(Self::close_overlay))
-            .child(if authenticated {
+            .child(if authenticated && self.modal == Modal::Settings {
+                ui::settings::render(self, window, cx).into_any_element()
+            } else if authenticated
+                && matches!(self.modal, Modal::Manage | Modal::Pins | Modal::Profile(_))
+            {
+                ui::management::render(self, window, cx).into_any_element()
+            } else if authenticated {
                 ui::shell(self, window, cx).into_any_element()
             } else {
                 ui::login(self, window, cx).into_any_element()
             })
-            .when(self.modal != Modal::None, |view| {
-                view.child(ui::search::overlay(self, window, cx))
-            })
+            .when(
+                self.modal != Modal::None
+                    && !matches!(
+                        self.modal,
+                        Modal::Settings | Modal::Manage | Modal::Pins | Modal::Profile(_)
+                    ),
+                |view| view.child(ui::search::overlay(self, window, cx)),
+            )
     }
 }

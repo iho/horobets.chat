@@ -42,13 +42,52 @@ pub fn event_channel(e: &ServerEvent) -> Option<&str> {
         ServerEvent::MessageDeleted { channel_id, .. }
         | ServerEvent::ReactionUpdated { channel_id, .. }
         | ServerEvent::ReadStateUpdated { channel_id, .. }
+        | ServerEvent::PinUpdated { channel_id, .. }
         | ServerEvent::UserTyping { channel_id, .. } => Some(channel_id),
         _ => None,
     }
 }
 pub fn apply(c: &mut Connection, user: &str, event: ClientEvent) -> Result<(ServerEvent, bool)> {
+    apply_as(c, user, false, event)
+}
+pub fn personal(c: &Connection, ch: &str) -> Result<bool> {
+    Ok(c.query_row("SELECT EXISTS(SELECT 1 FROM direct_channels WHERE channel_id=?1) OR EXISTS(SELECT 1 FROM saved_channels WHERE channel_id=?1)",[ch],|r|r.get(0))?)
+}
+pub fn apply_as(
+    c: &mut Connection,
+    user: &str,
+    moderator: bool,
+    event: ClientEvent,
+) -> Result<(ServerEvent, bool)> {
     let tx = c.transaction()?;
     let e = match event {
+        ClientEvent::PinMessage { message_id, pinned } => {
+            let m = get(&tx, &message_id)?;
+            access(&tx, &m.channel_id, user)?;
+            let private = personal(&tx, &m.channel_id)?;
+            if !private && !moderator {
+                return Err(Error::Forbidden);
+            }
+            if m.deleted_at.is_some() {
+                return Err(Error::Bad("Message is deleted".into()));
+            }
+            let at = crate::now();
+            if pinned {
+                tx.execute("INSERT INTO message_pins VALUES(?,?,?) ON CONFLICT(message_id) DO UPDATE SET pinned_by=excluded.pinned_by,created_at=excluded.created_at",params![message_id,user,at])?;
+            } else {
+                tx.execute("DELETE FROM message_pins WHERE message_id=?", [&message_id])?;
+            }
+            if !private {
+                tx.execute("INSERT INTO moderation_actions(channel_id,message_id,actor_id,action,created_at) VALUES(?,?,?,?,?)",params![m.channel_id,message_id,user,if pinned{"message_pinned"}else{"message_unpinned"},at])?;
+            }
+            ServerEvent::PinUpdated {
+                channel_id: m.channel_id,
+                message_id,
+                user_id: user.into(),
+                pinned,
+                created_at: at,
+            }
+        }
         ClientEvent::Ping { ts } => return Ok((ServerEvent::Pong { ts }, false)),
         ClientEvent::SendMessage {
             client_msg_id,
@@ -128,13 +167,18 @@ pub fn apply(c: &mut Connection, user: &str, event: ClientEvent) -> Result<(Serv
         ClientEvent::DeleteMessage { message_id } => {
             let m = get(&tx, &message_id)?;
             access(&tx, &m.channel_id, user)?;
-            if m.user_id != user {
+            let private = personal(&tx, &m.channel_id)?;
+            if m.user_id != user && (!moderator || private) {
                 return Err(Error::Forbidden);
             }
             tx.execute(
                 "UPDATE messages SET body_md='',deleted_at=? WHERE id=?",
                 params![crate::now(), message_id],
             )?;
+            tx.execute("DELETE FROM message_pins WHERE message_id=?", [&message_id])?;
+            if !private {
+                tx.execute("INSERT INTO moderation_actions(channel_id,message_id,actor_id,action,created_at) VALUES(?,?,?,'message_deleted',?)",params![m.channel_id,message_id,user,crate::now()])?;
+            }
             ServerEvent::MessageDeleted {
                 channel_id: m.channel_id,
                 message_id,

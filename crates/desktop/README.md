@@ -36,8 +36,12 @@ The bundle is unsigned; distribution signing/notarization is not included.
 
 - **Enter** sends; **Shift+Enter** inserts a newline. Channel drafts survive channel switching during a session.
 - **Cmd+K / Ctrl+K** opens the local full-text search and channel switcher. Use arrows and Enter, or click a result. Search results open the full message/thread, including older cached history.
+- Hover a message to reveal reply, reaction, pin, edit, and delete actions permitted for your role. Messages with replies keep their actions visible. Date separators mark each day in the conversation.
 - **Reply in thread** opens the 360px thread pane; **Esc** closes a modal or thread.
-- React with 👍 or toggle an existing emoji pill. Authors can edit/delete their messages.
+- **+ React** opens a picker with 32 reactions, including ❤️, 😂, 🎉, 👀, 🚀, and ✅. Use arrow keys and Enter, or click an emoji. Your reactions are highlighted; choose one again or click its existing pill to remove it. Authors can edit/delete their messages.
+- Recognized **@handles** and **#channels** in messages, replies, pinned messages, and previews are clickable: handles open profiles, channels open the conversation. Code, email addresses, and existing Markdown links keep their original meaning. Unknown references stay plain text.
+- Type **@** to autocomplete workspace members with handles, or **#** to autocomplete accessible channels. Filter by typing part of the handle, display name, or channel name. Use **↑/↓** to choose, **Enter/Tab** or click to insert, and **Esc** to dismiss. Available in messages and thread replies; selecting a suggestion does not send the message.
+- **Markdown:** use the composer toolbar for bold, italic, inline code, links, headings, quotes, lists, and fenced code blocks. Select text first to format it. **⌘B / Ctrl+B**, **⌘I / Ctrl+I**, and **⌘E / Ctrl+E** apply bold, italic, and inline code. **Preview** shows the rendered draft; **Write** returns to editing. This works in channel messages and thread replies.
 - Add an optional topic in the field above the channel composer.
 - **Attach file** opens the OS picker; dropping files onto a composer uploads them. Click a file chip's × before sending to remove it. Files must be under 10 MiB. Download buttons use an authenticated request and a native Save dialog.
 - `/join channel-name` switches to an existing channel.
@@ -45,6 +49,21 @@ The bundle is unsigned; distribution signing/notarization is not included.
 - **Refresh** reloads workspace/channel/member metadata; **Sign out** removes the saved session token.
 
 Drag the divider beside the channel sidebar to resize it (180–420px), or the divider beside an open thread to resize that pane (260–600px). Widths are saved in `layout.json` in the app data directory. The sidebar starts at 240px. Message lists use GPUI's variable-height virtual list so multiline Markdown and code are not clipped to a fixed row height; search results use `uniform_list`.
+
+## Private channels, DMs, and settings
+
+- Create a channel with the sidebar **+**, choose **Private · invite only**, and create it. Open **Members** in the channel header to add or remove workspace teammates. The desktop exposes membership editing to the channel creator; other invited members can view the member list.
+- Click **+** beside **Direct Messages** to find a workspace teammate by name or `@handle`, then click **Message**. DMs are always between two people. Opening the same pair from either side reuses their conversation. DMs support threads, reactions, file sharing, and local search.
+- Open **Settings** in the sidebar to change your display name and set a unique handle such as `@ihor`. Handles use 3–32 ASCII letters, digits, or underscores, starting with a letter. Leading `@` is optional; the server normalizes case. Blank releases your handle. Sign-in still uses your email address.
+- Choose **Dark** or **Light** under Appearance. Dark is the default. The whole interface follows the selected palette, including Markdown, inputs, sidebar, threads, dialogs, and settings. Your device remembers the selection in `layout.json`. Secondary actions have visible outlines and dark text in Light mode; selected and primary actions use a filled accent color, with distinct hover, pressed, and focus states.
+
+Membership updates refresh connected clients. A new member receives earlier channel history even if their sync cursor previously skipped private events. Removing a member purges that channel's messages, pending sends, and search entries from the connected client cache. Reconnect performs the same catalog check.
+
+## Workspace and moderation
+
+Use **Workspace** in the sidebar for workspace details, channel editing, people, moderator roles, and moderation activity. Owners/admins edit workspace details and assign moderators; channel creators and moderators can edit accessible channels. Authors edit their own messages; moderators and owners can pin or delete messages in accessible workspace channels. Direct messages remain private to their participants. **Pins** opens the pinned-message view.
+
+Click an author’s name or avatar to view their profile and start a direct conversation. **Saved messages** is a private conversation with yourself for notes and files. Settings includes your display name, handle, biography, profile picture, and appearance.
 
 ## Profile pictures and inline images
 
@@ -72,6 +91,8 @@ cargo test --workspace
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 ```
 
-Client tests cover atomic optimistic reconciliation, FTS changes/deletions, workspace isolation, a two-user live conversation with threads/reactions, and an offline outbox surviving an app restart before reconnecting exactly once. The backend additionally tests concurrent writers, private-channel permissions, file access, and message ownership.
+Client tests cover atomic optimistic reconciliation, FTS changes/deletions, workspace isolation, a two-user live conversation with threads/reactions, and an offline outbox surviving an app restart before reconnecting exactly once. Additional tests cover handle uniqueness and validation, opposite DM requests racing to one conversation, fixed two-person DM membership, private-history recovery after invitation, cache/search removal after revocation, concurrent writers, file access, and message ownership.
 
-Direct-message channels, notification delivery, presence indicators, and rich-text WYSIWYG editing depend on further product/backend work. The connection pill reports transport state, not user presence. UniFFI/mobile exports are a later milestone. No 120 FPS or search-latency benchmark is claimed.
+Notification delivery, presence indicators, and rich-text WYSIWYG editing depend on further product/backend work. The connection pill reports transport state, not user presence. UniFFI/mobile exports are a later milestone. No 120 FPS or search-latency benchmark is claimed.
+
+The pinned GPUI Component dependency is vendored with a small text-link routing hook so internal links open in this window while external links keep opening in the browser. See `vendor/gpui-component/PATCHES.md`.

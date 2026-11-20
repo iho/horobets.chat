@@ -47,6 +47,7 @@ fn main() -> anyhow::Result<()> {
                 move |window, cx| {
                     let view = cx.new(|cx| Messenger::new(engine, layout_path, window, cx));
                     view.read(cx).focus.focus(window);
+                    ui::references::install(&view, cx);
                     cx.new(|cx| Root::new(view, window, cx))
                 },
             )

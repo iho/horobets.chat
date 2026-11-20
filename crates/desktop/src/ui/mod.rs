@@ -1,7 +1,13 @@
 use gpui::prelude::*;
+mod autocomplete;
 pub mod composer;
+pub mod conversations;
 pub mod feed;
+pub mod management;
+pub mod reactions;
+pub mod references;
 pub mod search;
+pub mod settings;
 pub mod sidebar;
 pub mod thread;
 use crate::state::{Messenger, Modal};
@@ -13,42 +19,156 @@ use gpui_component::{
     input::Input,
     resizable::{ResizableState, h_resizable, resizable_panel},
 };
-pub const BG: u32 = 0x10141c;
-pub const PANEL: u32 = 0x151b25;
-pub const BORDER: u32 = 0x273142;
-pub const TEXT: u32 = 0xe7edf6;
-pub const MUTED: u32 = 0x8998ae;
-pub const ACCENT: u32 = 0x62dbc3;
-pub fn muted(text: impl Into<SharedString>) -> Div {
-    div().text_xs().text_color(rgb(MUTED)).child(text.into())
+#[derive(Clone, Copy)]
+pub struct Palette {
+    pub bg: u32,
+    pub panel: u32,
+    pub border: u32,
+    pub text: u32,
+    pub muted: u32,
+    pub accent: u32,
+    pub hover: u32,
+    pub selected: u32,
+    pub error_bg: u32,
+    pub error_text: u32,
+    pub notice: u32,
+    pub badge: u32,
+    pub avatar: u32,
+    pub overlay: u32,
+}
+pub fn palette(cx: &App) -> Palette {
+    if gpui_component::Theme::global(cx).is_dark() {
+        Palette {
+            bg: 0x17191f,
+            panel: 0x111318,
+            border: 0x30333d,
+            text: 0xedf0f5,
+            muted: 0xa0a7b6,
+            accent: 0x62dbc3,
+            hover: 0x22262f,
+            selected: 0x203c37,
+            error_bg: 0x402832,
+            error_text: 0xffb8bf,
+            notice: 0x1b2937,
+            badge: 0x344557,
+            avatar: 0x285654,
+            overlay: 0x080c14dd,
+        }
+    } else {
+        Palette {
+            bg: 0xffffff,
+            panel: 0xf4f6f8,
+            border: 0xdde2e8,
+            text: 0x172335,
+            muted: 0x54657c,
+            accent: 0x117562,
+            hover: 0xe5eaf1,
+            selected: 0xd9f0e9,
+            error_bg: 0xffe7e9,
+            error_text: 0x9d2236,
+            notice: 0xe6f0fa,
+            badge: 0xd7e0ed,
+            avatar: 0xc2e8de,
+            overlay: 0x17233566,
+        }
+    }
+}
+/// Common secondary controls have a visible outline on both page and sidebar surfaces.
+pub fn secondary_button(id: impl Into<ElementId>) -> Button {
+    Button::new(id).outline()
+}
+/// Keep component controls consistent with the app palette whenever appearance changes.
+pub fn configure_controls(cx: &mut App) {
+    let dark = gpui_component::Theme::global(cx).is_dark();
+    let colors = palette(cx);
+    let theme = gpui_component::Theme::global_mut(cx);
+    theme.background = rgb(colors.bg).into();
+    theme.foreground = rgb(colors.text).into();
+    theme.border = rgb(if dark { 0x596a80 } else { 0x73859b }).into();
+    theme.input = theme.border;
+    theme.ring = rgb(colors.accent).into();
+    theme.secondary = rgb(if dark { 0x263344 } else { 0xe1e7ef }).into();
+    theme.secondary_foreground = rgb(colors.text).into();
+    theme.secondary_hover = rgb(if dark { 0x35475d } else { 0xcbd7e5 }).into();
+    theme.secondary_active = rgb(if dark { 0x405872 } else { 0xb8c9dd }).into();
+    theme.primary = rgb(if dark { 0x62dbc3 } else { 0x146b59 }).into();
+    theme.primary_foreground = rgb(if dark { 0x092e28 } else { 0xffffff }).into();
+    theme.primary_hover = rgb(if dark { 0x88ebd8 } else { 0x0f5749 }).into();
+    theme.primary_active = rgb(if dark { 0x46bea8 } else { 0x0a493d }).into();
+}
+#[derive(IntoElement)]
+pub struct Muted(SharedString);
+impl RenderOnce for Muted {
+    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+        div()
+            .text_xs()
+            .text_color(rgb(palette(cx).muted))
+            .child(self.0)
+    }
+}
+pub fn muted(text: impl Into<SharedString>) -> Muted {
+    Muted(text.into())
+}
+pub fn channel_label(channel: &shared_proto::Channel, users: &[shared_proto::User]) -> String {
+    if channel.is_saved {
+        "Saved messages".into()
+    } else if channel.is_direct {
+        users
+            .iter()
+            .find(|u| Some(&u.id) == channel.peer_user_id.as_ref())
+            .map(|u| {
+                u.handle
+                    .as_ref()
+                    .map(|h| format!("@{h}"))
+                    .unwrap_or_else(|| u.display_name.clone())
+            })
+            .unwrap_or_else(|| "Direct message".into())
+    } else {
+        format!(
+            "{} {}",
+            if channel.is_private { "▣" } else { "#" },
+            channel.name
+        )
+    }
 }
 pub fn shell(
     this: &mut Messenger,
     window: &mut Window,
     cx: &mut Context<Messenger>,
 ) -> impl IntoElement + use<> {
+    let colors = palette(cx);
     let channel = this
         .snapshot
         .channels
         .iter()
         .find(|c| Some(&c.id) == this.snapshot.channel.as_ref());
     let heading = channel
-        .map(|c| format!("# {}", c.name))
+        .map(|c| channel_label(c, &this.snapshot.users))
         .unwrap_or_else(|| "Your workspace".into());
-    let topic = channel
-        .and_then(|c| c.topic.clone())
-        .unwrap_or_else(|| "A little more focus. A lot less noise.".into());
+    let topic = channel.and_then(|c| c.topic.clone()).unwrap_or_else(|| {
+        if channel.is_some_and(|c| c.is_saved) {
+            "Private notes and files · only you can read these".into()
+        } else if channel.is_some_and(|c| c.is_direct) {
+            "Only you and this teammate can read this conversation.".into()
+        } else if channel.is_some_and(|c| c.is_private) {
+            "Private channel · invited members only".into()
+        } else {
+            "A little more focus. A lot less noise.".into()
+        }
+    });
     let header = div()
         .h(px(68.))
         .flex_shrink_0()
         .px_6()
         .border_b_1()
-        .border_color(rgb(BORDER))
+        .border_color(rgb(colors.border))
         .flex()
         .items_center()
-        .justify_between()
+        .gap_3()
         .child(
             div()
+                .flex_1()
+                .min_w_0()
                 .flex()
                 .flex_col()
                 .gap_1()
@@ -58,11 +178,46 @@ pub fn shell(
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(heading),
                 )
-                .child(muted(topic)),
+                .child(div().overflow_hidden().child(muted(topic))),
         )
-        .child(Button::new("search-open").label("Search   ⌘ K").on_click(
-            cx.listener(|this, _, window, cx| this.open_modal(Modal::Search, window, cx)),
-        ));
+        .when(
+            channel.is_some_and(|c| c.is_private && !c.is_direct && !c.is_saved),
+            |v| {
+                v.child(
+                    secondary_button("channel-members")
+                        .label("Members")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            this.open_modal(Modal::Members, window, cx)
+                        })),
+                )
+            },
+        )
+        .when(
+            channel.is_some_and(|c| {
+                !c.is_direct
+                    && !c.is_saved
+                    && (this.snapshot.can_moderate()
+                        || Some(&c.created_by) == this.snapshot.user_id.as_ref())
+            }),
+            |v| {
+                v.child(
+                    secondary_button("edit-current-channel")
+                        .label("Details")
+                        .on_click(cx.listener(|this, _, window, cx| {
+                            if let Some(ch) = this.snapshot.channel.clone() {
+                                this.open_modal(Modal::ChannelEdit(ch), window, cx);
+                            }
+                        })),
+                )
+            },
+        )
+        .child(
+            secondary_button("search-open")
+                .label("Search   ⌘ K")
+                .on_click(
+                    cx.listener(|this, _, window, cx| this.open_modal(Modal::Search, window, cx)),
+                ),
+        );
     let sidebar = sidebar::render(this, cx);
     let center = div()
         .flex_1()
@@ -78,15 +233,15 @@ pub fn shell(
                     div()
                         .px_6()
                         .py_2()
-                        .bg(rgb(0x402832))
-                        .text_color(rgb(0xffb8bf))
+                        .bg(rgb(colors.error_bg))
+                        .text_color(rgb(colors.error_text))
                         .child(
                             this.local_error
                                 .clone()
                                 .or(this.snapshot.error.clone())
                                 .unwrap_or_default(),
                         )
-                        .child(Button::new("dismiss-error").label("Dismiss").on_click(
+                        .child(secondary_button("dismiss-error").label("Dismiss").on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.local_error = None;
                                 this.command(Command::ClearError, cx);
@@ -100,7 +255,7 @@ pub fn shell(
                 div()
                     .px_6()
                     .py_2()
-                    .bg(rgb(0x1b2937))
+                    .bg(rgb(colors.notice))
                     .child(muted(this.snapshot.notice.clone().unwrap_or_default())),
             )
         })
@@ -156,6 +311,7 @@ pub fn login(
     _window: &mut Window,
     cx: &mut Context<Messenger>,
 ) -> impl IntoElement + use<> {
+    let colors = palette(cx);
     div()
         .size_full()
         .flex()
@@ -169,14 +325,14 @@ pub fn login(
                 .flex_col()
                 .gap_4()
                 .rounded_xl()
-                .bg(rgb(PANEL))
+                .bg(rgb(colors.panel))
                 .border_1()
-                .border_color(rgb(BORDER))
+                .border_color(rgb(colors.border))
                 .child(
                     div()
                         .text_3xl()
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(ACCENT))
+                        .text_color(rgb(colors.accent))
                         .child("h."),
                 )
                 .child(
@@ -222,7 +378,7 @@ pub fn login(
                     this.local_error.is_some() || this.snapshot.error.is_some(),
                     |view| {
                         view.child(
-                            div().text_color(rgb(0xffb8bf)).child(
+                            div().text_color(rgb(colors.error_text)).child(
                                 this.local_error
                                     .clone()
                                     .or(this.snapshot.error.clone())
@@ -245,7 +401,7 @@ pub fn login(
                         .on_click(cx.listener(|this, _, window, cx| this.authenticate(window, cx))),
                 )
                 .child(
-                    Button::new("switch-auth")
+                    secondary_button("switch-auth")
                         .label(if this.register {
                             "Already have an account? Sign in"
                         } else {
@@ -262,7 +418,8 @@ pub fn login(
         )
 }
 
-pub fn avatar(this: &Messenger, user: &str, diameter: f32) -> AnyElement {
+pub fn avatar(this: &Messenger, user: &str, diameter: f32, cx: &App) -> AnyElement {
+    let colors = palette(cx);
     if let Some(path) = this.snapshot.avatars.get(user) {
         img(path.clone())
             .size(px(diameter))
@@ -282,7 +439,7 @@ pub fn avatar(this: &Messenger, user: &str, diameter: f32) -> AnyElement {
             .size(px(diameter))
             .flex_shrink_0()
             .rounded_full()
-            .bg(rgb(0x285654))
+            .bg(rgb(colors.avatar))
             .flex()
             .items_center()
             .justify_center()

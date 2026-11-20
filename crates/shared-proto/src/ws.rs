@@ -4,6 +4,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum ClientEvent {
+    PinMessage {
+        message_id: String,
+        pinned: bool,
+    },
     Ping {
         ts: i64,
     },
@@ -38,6 +42,14 @@ pub enum ClientEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum ServerEvent {
+    PinUpdated {
+        channel_id: String,
+        message_id: String,
+        user_id: String,
+        pinned: bool,
+        created_at: i64,
+    },
+    ChannelsChanged,
     Pong {
         ts: i64,
     },
@@ -105,6 +117,10 @@ mod tests {
             created_at: 1,
         };
         let clients = vec![
+            ClientEvent::PinMessage {
+                message_id: s.clone(),
+                pinned: true,
+            },
             ClientEvent::Ping { ts: 1 },
             ClientEvent::SendMessage {
                 client_msg_id: s.clone(),
@@ -141,6 +157,14 @@ mod tests {
             );
         }
         let events = vec![
+            ServerEvent::PinUpdated {
+                channel_id: s.clone(),
+                message_id: s.clone(),
+                user_id: s.clone(),
+                pinned: true,
+                created_at: 1,
+            },
+            ServerEvent::ChannelsChanged,
             ServerEvent::Pong { ts: 1 },
             ServerEvent::Hello {
                 user_id: s.clone(),

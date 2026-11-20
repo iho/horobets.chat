@@ -133,7 +133,7 @@ impl Manager {
         self.global
             .read(move |c| {
                 c.query_row(
-                    "SELECT role FROM workspace_members WHERE workspace_id=? AND user_id=?",
+                    "SELECT CASE WHEN role IN ('owner','admin') THEN role WHEN EXISTS(SELECT 1 FROM workspace_moderators m WHERE m.workspace_id=workspace_members.workspace_id AND m.user_id=workspace_members.user_id) THEN 'moderator' ELSE role END FROM workspace_members WHERE workspace_id=? AND user_id=?",
                     [w, u],
                     |r| r.get(0),
                 )

@@ -41,7 +41,11 @@ pub struct Snapshot {
     pub workspaces: Vec<Workspace>,
     pub workspace: Option<String>,
     pub channels: Vec<Channel>,
+    pub channel_members: Vec<String>,
     pub users: Vec<shared_proto::User>,
+    pub people: Vec<shared_proto::MemberInfo>,
+    pub pins: Vec<shared_proto::PinnedMessage>,
+    pub moderation: Vec<shared_proto::ModerationAction>,
     pub me: Option<shared_proto::User>,
     pub avatars: BTreeMap<String, PathBuf>,
     pub image_previews: BTreeMap<String, PathBuf>,
@@ -61,6 +65,21 @@ pub struct Snapshot {
     pub notice: Option<String>,
     pub has_older: bool,
 }
+impl Snapshot {
+    pub fn role(&self) -> &str {
+        self.people
+            .iter()
+            .find(|m| Some(&m.user.id) == self.user_id.as_ref())
+            .map(|m| m.role.as_str())
+            .unwrap_or("member")
+    }
+    pub fn can_moderate(&self) -> bool {
+        matches!(self.role(), "owner" | "admin" | "moderator")
+    }
+    pub fn can_manage_workspace(&self) -> bool {
+        matches!(self.role(), "owner" | "admin")
+    }
+}
 pub enum Command {
     Authenticate {
         server: String,
@@ -77,7 +96,31 @@ pub enum Command {
         slug: String,
     },
     CreateChannel(String),
+    CreatePrivateChannel(String),
+    OpenDirect(String),
+    ChannelMember {
+        user_id: String,
+        add: bool,
+    },
+    SaveProfile {
+        display_name: String,
+        handle: String,
+        bio: Option<String>,
+    },
     Invite(String),
+    EditWorkspace {
+        name: String,
+        slug: String,
+    },
+    EditChannel {
+        id: String,
+        name: String,
+        topic: String,
+    },
+    SetRole {
+        user_id: String,
+        role: String,
+    },
     Send {
         body: String,
         parent_id: Option<String>,
@@ -232,6 +275,22 @@ impl Worker {
             (&self.cache, &self.session, &self.view.workspace)
         {
             self.view.channels = cache.channels(w)?;
+            self.view.people = cache.metadata(&format!("people:{w}"))?.unwrap_or_default();
+            self.view.pins = cache.pins(w)?;
+            self.view.moderation = if self.view.can_moderate() {
+                cache
+                    .metadata(&format!("moderation:{w}"))?
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
+            self.view.channel_members = if let Some(ch) = &self.view.channel {
+                cache
+                    .metadata(&format!("channel-members:{w}:{ch}"))?
+                    .unwrap_or_default()
+            } else {
+                vec![]
+            };
             if let Some(ch) = &self.view.channel {
                 cache.mark_read(w, ch)?;
             }
@@ -387,9 +446,14 @@ impl Worker {
     async fn heartbeat(&mut self) -> Result<()> {
         if self.last_directory_refresh.elapsed() >= Duration::from_secs(30) {
             if let (Some(session), Some(w)) = (&self.session, &self.view.workspace) {
-                let users: Vec<shared_proto::User> =
-                    sync::json(session.get(&self.http, &format!("/workspaces/{w}/members")))
-                        .await?;
+                let people: Vec<shared_proto::MemberInfo> =
+                    sync::json(session.get(&self.http, &format!("/workspaces/{w}/people"))).await?;
+                let users: Vec<_> = people.iter().map(|m| m.user.clone()).collect();
+                self.cache
+                    .as_ref()
+                    .unwrap()
+                    .set_metadata(&format!("people:{w}"), &people)?;
+                self.view.people = people;
                 self.cache
                     .as_ref()
                     .unwrap()
@@ -448,8 +512,14 @@ impl Worker {
             self.view.messages.clear();
         }
         if let Some(w) = &self.view.workspace {
-            let users: Vec<shared_proto::User> =
-                sync::json(session.get(&self.http, &format!("/workspaces/{w}/members"))).await?;
+            let people: Vec<shared_proto::MemberInfo> =
+                sync::json(session.get(&self.http, &format!("/workspaces/{w}/people"))).await?;
+            let users: Vec<_> = people.iter().map(|m| m.user.clone()).collect();
+            self.cache
+                .as_ref()
+                .unwrap()
+                .set_metadata(&format!("people:{w}"), &people)?;
+            self.view.people = people;
             self.cache
                 .as_ref()
                 .unwrap()
@@ -457,16 +527,49 @@ impl Worker {
             self.view.users = users;
             let channels: Vec<Channel> =
                 sync::json(session.get(&self.http, &format!("/workspaces/{w}/channels"))).await?;
+            let previous = self.cache.as_ref().unwrap().channels(w)?;
+            if channels
+                .iter()
+                .any(|ch| !previous.iter().any(|old| old.id == ch.id))
+            {
+                self.cache
+                    .as_ref()
+                    .unwrap()
+                    .set_metadata(&format!("cursor:{w}"), &0i64)?;
+            }
             self.cache.as_mut().unwrap().set_channels(w, &channels)?;
             if !channels
                 .iter()
                 .any(|c| Some(&c.id) == self.view.channel.as_ref())
             {
                 self.view.channel = channels.first().map(|c| c.id.clone());
+                self.view.messages.clear();
+                self.view.thread = None;
+                self.view.thread_messages.clear();
+                self.view.attachments.clear();
+                self.view.message_attachments.clear();
             }
             self.view.channels = channels;
         }
         self.refresh_avatars().await;
+        self.refresh_channel_members().await?;
+        Ok(())
+    }
+    async fn refresh_channel_members(&mut self) -> Result<()> {
+        if let (Some(session), Some(w), Some(ch)) =
+            (&self.session, &self.view.workspace, &self.view.channel)
+        {
+            let members: Vec<String> = sync::json(session.get(
+                &self.http,
+                &format!("/workspaces/{w}/channels/{ch}/members"),
+            ))
+            .await?;
+            self.cache
+                .as_ref()
+                .unwrap()
+                .set_metadata(&format!("channel-members:{w}:{ch}"), &members)?;
+            self.view.channel_members = members;
+        }
         Ok(())
     }
     async fn connect(&mut self) -> Result<()> {
@@ -514,6 +617,22 @@ impl Worker {
             sync::backfill(&self.http, session, w, cache).await?;
         }
         self.refresh_attachments().await?;
+        self.refresh_moderation().await?;
+        Ok(())
+    }
+    async fn refresh_moderation(&mut self) -> Result<()> {
+        if let (Some(session), Some(w)) = (&self.session, &self.view.workspace) {
+            let actions: Vec<shared_proto::ModerationAction> = if self.view.can_moderate() {
+                sync::json(session.get(&self.http, &format!("/workspaces/{w}/moderation"))).await?
+            } else {
+                vec![]
+            };
+            self.cache
+                .as_ref()
+                .unwrap()
+                .set_metadata(&format!("moderation:{w}"), &actions)?;
+            self.view.moderation = actions;
+        }
         Ok(())
     }
     async fn refresh_attachments(&mut self) -> Result<()> {
@@ -579,6 +698,12 @@ impl Worker {
             Message::Text(text) => {
                 let event: ServerEvent = serde_json::from_str(&text)?;
                 match event {
+                    ServerEvent::ChannelsChanged => {
+                        self.refresh_catalog().await?;
+                        self.backfill().await?;
+                        self.in_flight = None;
+                        self.flush().await?;
+                    }
                     ServerEvent::Hello { .. }
                     | ServerEvent::Pong { .. }
                     | ServerEvent::UserTyping { .. }
@@ -691,6 +816,7 @@ impl Worker {
                     cache.mark_read(w, &ch)?;
                 }
                 if self.view.connected {
+                    self.refresh_channel_members().await?;
                     self.refresh_attachments().await?;
                 }
             }
@@ -719,18 +845,136 @@ impl Worker {
                 self.retry_at = Instant::now();
                 self.refresh_catalog().await?;
             }
-            Command::CreateChannel(name) => {
+            command @ (Command::CreateChannel(_) | Command::CreatePrivateChannel(_)) => {
+                let (name, is_private) = match command {
+                    Command::CreateChannel(name) => (name, false),
+                    Command::CreatePrivateChannel(name) => (name, true),
+                    _ => unreachable!(),
+                };
                 let (session, w) = self.auth_workspace()?;
                 let ch: Channel = sync::json(
                     session
                         .post(&self.http, &format!("/workspaces/{w}/channels"))
-                        .json(&json!({"name":name})),
+                        .json(&json!({"name":name,"is_private":is_private})),
                 )
                 .await?;
                 self.refresh_catalog().await?;
                 self.view.channel = Some(ch.id);
                 self.view.thread = None;
                 self.limit = 200;
+                self.refresh_channel_members().await?;
+            }
+            Command::OpenDirect(user_id) => {
+                let (session, w) = self.auth_workspace()?;
+                let ch: Channel = sync::json(
+                    session
+                        .post(&self.http, &format!("/workspaces/{w}/directs"))
+                        .json(&json!({"user_id":user_id})),
+                )
+                .await?;
+                self.refresh_catalog().await?;
+                self.view.channel = Some(ch.id);
+                self.view.thread = None;
+                self.view.attachments.clear();
+                self.limit = 200;
+                self.backfill().await?;
+                self.refresh_channel_members().await?;
+            }
+            Command::ChannelMember { user_id, add } => {
+                let (session, w) = self.auth_workspace()?;
+                let ch = self.view.channel.as_ref().context("Select a channel")?;
+                let request = if add {
+                    session
+                        .post(
+                            &self.http,
+                            &format!("/workspaces/{w}/channels/{ch}/members"),
+                        )
+                        .json(&json!({"user_id":user_id}))
+                } else {
+                    self.http
+                        .delete(
+                            session
+                                .url(&format!("/workspaces/{w}/channels/{ch}/members/{user_id}")),
+                        )
+                        .bearer_auth(&session.token)
+                };
+                let _: serde_json::Value = sync::json(request).await?;
+                self.refresh_channel_members().await?;
+            }
+            Command::SaveProfile {
+                display_name,
+                handle,
+                bio,
+            } => {
+                let session = self.session.as_ref().context("Sign in first")?;
+                let user: shared_proto::User = sync::json(
+                    self.http
+                        .patch(session.url("/users/me"))
+                        .bearer_auth(&session.token)
+                        .json(&json!({"display_name":display_name,"handle":handle,"bio":bio})),
+                )
+                .await?;
+                self.cache.as_ref().unwrap().set_metadata("me", &user)?;
+                for member in &mut self.view.users {
+                    if member.id == user.id {
+                        *member = user.clone();
+                    }
+                }
+                if let Some(w) = &self.view.workspace {
+                    self.cache
+                        .as_ref()
+                        .unwrap()
+                        .set_metadata(&format!("members:{w}"), &self.view.users)?;
+                }
+                for person in &mut self.view.people {
+                    if person.user.id == user.id {
+                        person.user = user.clone();
+                    }
+                }
+                if let Some(w) = &self.view.workspace {
+                    self.cache
+                        .as_ref()
+                        .unwrap()
+                        .set_metadata(&format!("people:{w}"), &self.view.people)?;
+                }
+                self.view.me = Some(user);
+                self.view.notice = Some("Profile saved".into());
+            }
+            Command::EditWorkspace { name, slug } => {
+                let (session, w) = self.auth_workspace()?;
+                let _: Workspace = sync::json(
+                    self.http
+                        .patch(session.url(&format!("/workspaces/{w}")))
+                        .bearer_auth(&session.token)
+                        .json(&json!({"name":name,"slug":slug})),
+                )
+                .await?;
+                self.refresh_catalog().await?;
+                self.view.notice = Some("Workspace saved".into());
+            }
+            Command::EditChannel { id, name, topic } => {
+                let (session, w) = self.auth_workspace()?;
+                let _: serde_json::Value = sync::json(
+                    self.http
+                        .patch(session.url(&format!("/workspaces/{w}/channels/{id}")))
+                        .bearer_auth(&session.token)
+                        .json(&json!({"name":name,"topic":topic})),
+                )
+                .await?;
+                self.refresh_catalog().await?;
+                self.view.notice = Some("Channel saved".into());
+            }
+            Command::SetRole { user_id, role } => {
+                let (session, w) = self.auth_workspace()?;
+                let _: serde_json::Value = sync::json(
+                    self.http
+                        .patch(session.url(&format!("/workspaces/{w}/people/{user_id}/role")))
+                        .bearer_auth(&session.token)
+                        .json(&json!({"role":role})),
+                )
+                .await?;
+                self.refresh_catalog().await?;
+                self.view.notice = Some("Role updated".into());
             }
             Command::Invite(email) => {
                 let (session, w) = self.auth_workspace()?;

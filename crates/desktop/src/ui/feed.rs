@@ -1,12 +1,12 @@
 use super::*;
 use client_core::{CachedMessage, OutboxStatus};
-use gpui_component::text::TextView;
 use shared_proto::ClientEvent;
 pub fn render(
     this: &mut Messenger,
     _window: &mut Window,
     cx: &mut Context<Messenger>,
 ) -> impl IntoElement + use<> {
+    let colors = palette(cx);
     let entity = cx.entity();
     div()
         .flex_1()
@@ -15,7 +15,7 @@ pub fn render(
         .flex_col()
         .when(this.snapshot.has_older, |view| {
             view.child(
-                Button::new("older")
+                secondary_button("older")
                     .label("Load earlier messages")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.command(Command::LoadOlder, cx);
@@ -31,7 +31,18 @@ pub fn render(
                     .justify_center()
                     .items_center()
                     .gap_3()
-                    .child(div().text_3xl().text_color(rgb(ACCENT)).child("#"))
+                    .child(
+                        div()
+                            .size(px(72.))
+                            .rounded_xl()
+                            .bg(rgb(colors.selected))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .text_3xl()
+                            .text_color(rgb(colors.accent))
+                            .child("#"),
+                    )
                     .child(div().text_xl().font_weight(FontWeight::SEMIBOLD).child(
                         if this.snapshot.channel.is_some() {
                             "Every conversation starts somewhere."
@@ -54,12 +65,52 @@ pub fn render(
                             return div().into_any_element();
                         };
                         let message = this.snapshot.messages[index].clone();
-                        let grouped = ix > 0 && {
-                            let previous = &this.snapshot.messages[this.visible[ix - 1]].message;
-                            previous.user_id == message.message.user_id
-                                && message.message.created_at - previous.created_at < 300_000
-                        };
-                        row(this, &message, grouped, false, window, cx)
+                        let day =
+                            chrono::DateTime::from_timestamp_millis(message.message.created_at)
+                                .map(|t| t.with_timezone(&chrono::Local).date_naive());
+                        let previous = ix
+                            .checked_sub(1)
+                            .map(|i| &this.snapshot.messages[this.visible[i]].message);
+                        let same_day = previous.is_some_and(|p| {
+                            chrono::DateTime::from_timestamp_millis(p.created_at)
+                                .map(|t| t.with_timezone(&chrono::Local).date_naive())
+                                == day
+                        });
+                        let grouped = same_day
+                            && previous.is_some_and(|p| {
+                                p.user_id == message.message.user_id
+                                    && message.message.created_at - p.created_at < 300_000
+                            });
+                        let message_row = row(this, &message, grouped, false, window, cx);
+                        div()
+                            .when(!same_day, |v| {
+                                v.child(
+                                    div()
+                                        .px_6()
+                                        .pt_5()
+                                        .pb_2()
+                                        .flex()
+                                        .items_center()
+                                        .gap_3()
+                                        .child(div().flex_1().h(px(1.)).bg(rgb(colors.border)))
+                                        .child(muted(
+                                            day.map(|d| {
+                                                let today = chrono::Local::now().date_naive();
+                                                if d == today {
+                                                    "Today".to_owned()
+                                                } else if Some(d) == today.pred_opt() {
+                                                    "Yesterday".to_owned()
+                                                } else {
+                                                    d.format("%B %-d, %Y").to_string()
+                                                }
+                                            })
+                                            .unwrap_or_default(),
+                                        ))
+                                        .child(div().flex_1().h(px(1.)).bg(rgb(colors.border))),
+                                )
+                            })
+                            .child(message_row)
+                            .into_any_element()
                     })
                 })
                 .size_full(),
@@ -74,6 +125,7 @@ pub fn row(
     window: &mut Window,
     cx: &mut Context<Messenger>,
 ) -> AnyElement {
+    let colors = palette(cx);
     let m = &cached.message;
     let id = m.id.clone();
     let mine = this.snapshot.user_id.as_ref() == Some(&m.user_id);
@@ -99,38 +151,79 @@ pub fn row(
     let delete_id = id.clone();
     let react_id = id.clone();
     let retry_id = id.clone();
+    let profile_avatar = m.user_id.clone();
+    let profile_name = m.user_id.clone();
+    let personal = this
+        .snapshot
+        .channels
+        .iter()
+        .find(|c| c.id == m.channel_id)
+        .is_some_and(|c| c.is_direct || c.is_saved);
+    let moderate = this.snapshot.can_moderate() && !personal;
+    let can_pin = personal || moderate;
+    let pinned = this.snapshot.pins.iter().any(|pin| pin.message.id == id);
+    let pin_id = id.clone();
+    let moderated_delete = id.clone();
     div()
+        .group("message-row")
         .id(SharedString::from(format!(
             "{}-{}",
             if in_thread { "thread" } else { "feed" },
             id
         )))
         .px_6()
-        .pt(if grouped { px(2.) } else { px(18.) })
+        .pt(if grouped { px(2.) } else { px(16.) })
         .pb_2()
         .flex()
         .gap_3()
-        .hover(|v| v.bg(rgb(0x161e2a)))
-        .child(
-            div()
-                .w(px(32.))
-                .flex_shrink_0()
-                .when(!grouped, |v| v.child(super::avatar(this, &m.user_id, 32.))),
-        )
+        .hover(|v| v.bg(rgb(colors.hover)))
+        .child(div().w(px(32.)).flex_shrink_0().when(!grouped, |v| {
+            v.child(
+                div()
+                    .id(SharedString::from(format!("profile-avatar-{id}")))
+                    .cursor_pointer()
+                    .child(super::avatar(this, &m.user_id, 32., cx))
+                    .on_click(cx.listener(move |this, _, window, cx| {
+                        this.open_modal(Modal::Profile(profile_avatar.clone()), window, cx)
+                    })),
+            )
+        }))
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .flex()
                 .flex_col()
-                .gap_2()
+                .gap_1()
                 .when(!grouped, |v| {
                     v.child(
                         div()
                             .flex()
                             .items_center()
                             .gap_3()
-                            .child(div().font_weight(FontWeight::SEMIBOLD).child(author))
+                            .child(
+                                div()
+                                    .id(SharedString::from(format!("profile-name-{id}")))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .cursor_pointer()
+                                    .child(author)
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.open_modal(
+                                            Modal::Profile(profile_name.clone()),
+                                            window,
+                                            cx,
+                                        )
+                                    })),
+                            )
+                            .when(pinned, |v| v.child(muted("📌 Pinned")))
+                            .when_some(
+                                this.snapshot
+                                    .users
+                                    .iter()
+                                    .find(|u| u.id == m.user_id)
+                                    .and_then(|u| u.handle.clone()),
+                                |v, h| v.child(muted(format!("@{h}"))),
+                            )
                             .child(muted(time))
                             .when(m.edited_at.is_some(), |v| v.child(muted("edited"))),
                     )
@@ -139,24 +232,23 @@ pub fn row(
                     v.child(
                         div()
                             .text_xs()
-                            .text_color(rgb(ACCENT))
+                            .text_color(rgb(colors.accent))
                             .child(format!("◈ {}", m.topic_tag.as_deref().unwrap_or_default())),
                     )
                 })
                 .child(if deleted {
                     muted("Message deleted").into_any_element()
                 } else {
-                    TextView::markdown(
+                    super::references::render(
+                        this,
                         SharedString::from(format!(
                             "markdown-{}-{id}",
                             if in_thread { "thread" } else { "feed" }
                         )),
-                        m.body_md.clone(),
+                        &m.body_md,
                         window,
                         cx,
                     )
-                    .selectable(true)
-                    .into_any_element()
                 })
                 .when(!deleted, |v| {
                     v.children(
@@ -169,7 +261,7 @@ pub fn row(
                             .map(|a| {
                                 let aid = a.id.clone();
                                 let name = a.filename.clone();
-                                let download = Button::new(SharedString::from(format!(
+                                let download = secondary_button(SharedString::from(format!(
                                     "download-{}-{aid}",
                                     if in_thread { "thread" } else { "feed" }
                                 )))
@@ -210,6 +302,7 @@ pub fn row(
                             Button::new(SharedString::from(format!("reaction-{id}-{}", r.emoji)))
                                 .label(format!("{} {}", r.emoji, r.count))
                                 .when(r.mine, |b| b.primary())
+                                .when(!r.mine, |b| b.outline())
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.command(
                                         Command::Event(ClientEvent::ToggleReaction {
@@ -228,10 +321,14 @@ pub fn row(
                         v.child(
                             div()
                                 .flex()
-                                .gap_2()
+                                .flex_wrap()
+                                .gap_1()
+                                .invisible()
+                                .group_hover("message-row", |v| v.visible())
+                                .when(replies > 0, |v| v.visible())
                                 .when(!in_thread, |v| {
                                     v.child(
-                                        Button::new(SharedString::from(format!("reply-{id}")))
+                                        secondary_button(SharedString::from(format!("reply-{id}")))
                                             .label(if replies > 0 {
                                                 format!("{replies} replies →")
                                             } else {
@@ -249,21 +346,54 @@ pub fn row(
                                     )
                                 })
                                 .child(
-                                    Button::new(SharedString::from(format!("react-{id}")))
-                                        .label("+ 👍")
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            this.command(
-                                                Command::Event(ClientEvent::ToggleReaction {
-                                                    message_id: react_id.clone(),
-                                                    emoji: "👍".into(),
-                                                }),
+                                    secondary_button(SharedString::from(format!("react-{id}")))
+                                        .label("+ React")
+                                        .tooltip("Choose an emoji reaction")
+                                        .disabled(!this.snapshot.connected)
+                                        .on_click(cx.listener(move |this, _, window, cx| {
+                                            this.open_modal(
+                                                Modal::Reaction(react_id.clone()),
+                                                window,
                                                 cx,
                                             );
                                         })),
                                 )
+                                .when(can_pin, |v| {
+                                    v.child(
+                                        secondary_button(SharedString::from(format!("pin-{id}")))
+                                            .label(if pinned { "Unpin" } else { "Pin" })
+                                            .disabled(!this.snapshot.connected)
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.command(
+                                                    Command::Event(ClientEvent::PinMessage {
+                                                        message_id: pin_id.clone(),
+                                                        pinned: !pinned,
+                                                    }),
+                                                    cx,
+                                                );
+                                            })),
+                                    )
+                                })
+                                .when(!mine && moderate, |v| {
+                                    v.child(
+                                        secondary_button(SharedString::from(format!(
+                                            "moderate-delete-{id}"
+                                        )))
+                                        .label("Delete")
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.open_modal(
+                                                    Modal::ConfirmDelete(moderated_delete.clone()),
+                                                    window,
+                                                    cx,
+                                                )
+                                            }),
+                                        ),
+                                    )
+                                })
                                 .when(mine, |v| {
                                     v.child(
-                                        Button::new(SharedString::from(format!("edit-{id}")))
+                                        secondary_button(SharedString::from(format!("edit-{id}")))
                                             .label("Edit")
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.open_modal(
@@ -277,16 +407,19 @@ pub fn row(
                                             })),
                                     )
                                     .child(
-                                        Button::new(SharedString::from(format!("delete-{id}")))
-                                            .label("Delete")
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.command(
-                                                    Command::Event(ClientEvent::DeleteMessage {
-                                                        message_id: delete_id.clone(),
-                                                    }),
+                                        secondary_button(SharedString::from(format!(
+                                            "delete-{id}"
+                                        )))
+                                        .label("Delete")
+                                        .on_click(
+                                            cx.listener(move |this, _, window, cx| {
+                                                this.open_modal(
+                                                    Modal::ConfirmDelete(delete_id.clone()),
+                                                    window,
                                                     cx,
-                                                );
-                                            })),
+                                                )
+                                            }),
+                                        ),
                                     )
                                 }),
                         )
@@ -298,13 +431,13 @@ pub fn row(
                 .when(matches!(cached.status, OutboxStatus::Failed(_)), |v| {
                     v.child(
                         div()
-                            .text_color(rgb(0xffb8bf))
+                            .text_color(rgb(colors.error_text))
                             .child(match &cached.status {
                                 OutboxStatus::Failed(e) => format!("Not sent: {e}"),
                                 _ => String::new(),
                             })
                             .child(
-                                Button::new(SharedString::from(format!("retry-{id}")))
+                                secondary_button(SharedString::from(format!("retry-{id}")))
                                     .label("Retry")
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.command(Command::Retry(retry_id.clone()), cx);

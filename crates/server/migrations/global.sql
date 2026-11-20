@@ -4,3 +4,8 @@ CREATE TABLE IF NOT EXISTS workspace_members(workspace_id TEXT REFERENCES worksp
 CREATE TABLE IF NOT EXISTS push_tokens(id TEXT PRIMARY KEY,user_id TEXT NOT NULL REFERENCES users(id),platform TEXT CHECK(platform IN ('apns','fcm')),token TEXT NOT NULL,updated_at INTEGER NOT NULL);
 
 CREATE TABLE IF NOT EXISTS user_avatars(user_id TEXT PRIMARY KEY REFERENCES users(id),storage_key TEXT NOT NULL,updated_at INTEGER NOT NULL);
+
+CREATE TABLE IF NOT EXISTS user_handles(user_id TEXT PRIMARY KEY REFERENCES users(id),handle TEXT NOT NULL UNIQUE COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS workspace_moderators(workspace_id TEXT NOT NULL,user_id TEXT NOT NULL,assigned_by TEXT NOT NULL,created_at INTEGER NOT NULL,PRIMARY KEY(workspace_id,user_id),FOREIGN KEY(workspace_id,user_id) REFERENCES workspace_members(workspace_id,user_id));
+CREATE TABLE IF NOT EXISTS user_details(user_id TEXT PRIMARY KEY REFERENCES users(id),bio TEXT NOT NULL DEFAULT '');

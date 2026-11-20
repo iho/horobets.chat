@@ -13,11 +13,13 @@ impl Cache {
         CREATE TABLE IF NOT EXISTS messages(rowid INTEGER PRIMARY KEY,workspace TEXT NOT NULL,id TEXT NOT NULL,channel TEXT NOT NULL,parent TEXT,seq INTEGER NOT NULL,body TEXT NOT NULL,deleted INTEGER NOT NULL,json TEXT NOT NULL,UNIQUE(workspace,id));
         CREATE INDEX IF NOT EXISTS messages_channel ON messages(workspace,channel,seq);
         CREATE TABLE IF NOT EXISTS outbox(workspace TEXT,id TEXT,event TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending',error TEXT,PRIMARY KEY(workspace,id));
+        CREATE TABLE IF NOT EXISTS pins(workspace TEXT,message TEXT,channel TEXT,pinned_by TEXT,created_at INTEGER NOT NULL,PRIMARY KEY(workspace,message));
         CREATE TABLE IF NOT EXISTS reactions(workspace TEXT,message TEXT,user TEXT,emoji TEXT,PRIMARY KEY(workspace,message,user,emoji));
         CREATE TABLE IF NOT EXISTS reads(workspace TEXT,channel TEXT,seq INTEGER NOT NULL,PRIMARY KEY(workspace,channel));
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(body,tokenize='porter unicode61');
         CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages WHEN new.deleted=0 BEGIN INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;
-        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN DELETE FROM messages_fts WHERE rowid=old.rowid; INSERT INTO messages_fts(rowid,body) SELECT new.rowid,new.body WHERE new.deleted=0; END;")?;
+        CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN DELETE FROM messages_fts WHERE rowid=old.rowid; INSERT INTO messages_fts(rowid,body) SELECT new.rowid,new.body WHERE new.deleted=0; END;
+        CREATE TRIGGER IF NOT EXISTS messages_ad AFTER DELETE ON messages BEGIN DELETE FROM messages_fts WHERE rowid=old.rowid; END;")?;
         Ok(Self(c))
     }
     pub fn metadata<T: serde::de::DeserializeOwned>(&self, key: &str) -> Result<Option<T>> {
@@ -42,6 +44,35 @@ impl Cache {
     }
     pub fn set_channels(&mut self, w: &str, channels: &[Channel]) -> Result<()> {
         let tx = self.0.transaction()?;
+        let previous = {
+            let mut statement = tx.prepare("SELECT id FROM channels WHERE workspace=?")?;
+            statement
+                .query_map([w], |r| r.get::<_, String>(0))?
+                .collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for removed in previous
+            .into_iter()
+            .filter(|id| !channels.iter().any(|c| c.id == *id))
+        {
+            tx.execute(
+                "DELETE FROM pins WHERE workspace=? AND channel=?",
+                params![w, removed],
+            )?;
+            tx.execute("DELETE FROM reactions WHERE workspace=?1 AND message IN (SELECT id FROM messages WHERE workspace=?1 AND channel=?2)",params![w,removed])?;
+            tx.execute(
+                "DELETE FROM messages WHERE workspace=? AND channel=?",
+                params![w, removed],
+            )?;
+            tx.execute("DELETE FROM outbox WHERE workspace=? AND json_extract(event,'$.payload.channel_id')=?",params![w,removed])?;
+            tx.execute(
+                "DELETE FROM reads WHERE workspace=? AND channel=?",
+                params![w, removed],
+            )?;
+            tx.execute(
+                "DELETE FROM metadata WHERE key=?",
+                [format!("attachments:{w}:{removed}")],
+            )?;
+        }
         tx.execute("DELETE FROM channels WHERE workspace=?", [w])?;
         for ch in channels {
             tx.execute(
@@ -68,6 +99,22 @@ impl Cache {
         let tx = self.0.transaction()?;
         for event in events {
             match event {
+                ServerEvent::PinUpdated {
+                    channel_id,
+                    message_id,
+                    user_id,
+                    pinned,
+                    created_at,
+                } => {
+                    if *pinned {
+                        tx.execute("INSERT INTO pins VALUES(?,?,?,?,?) ON CONFLICT(workspace,message) DO UPDATE SET pinned_by=excluded.pinned_by,created_at=excluded.created_at",params![w,message_id,channel_id,user_id,created_at])?;
+                    } else {
+                        tx.execute(
+                            "DELETE FROM pins WHERE workspace=? AND message=?",
+                            params![w, message_id],
+                        )?;
+                    }
+                }
                 ServerEvent::MessageCreated { message, .. }
                 | ServerEvent::MessageUpdated { message } => {
                     tx.execute("INSERT INTO messages(workspace,id,channel,parent,seq,body,deleted,json) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(workspace,id) DO UPDATE SET channel=excluded.channel,parent=excluded.parent,seq=excluded.seq,body=excluded.body,deleted=excluded.deleted,json=excluded.json",params![w,message.id,message.channel_id,message.parent_id,message.seq,message.body_md,message.deleted_at.is_some(),serde_json::to_string(message)?])?;
@@ -77,6 +124,10 @@ impl Cache {
                     )?;
                 }
                 ServerEvent::MessageDeleted { message_id, .. } => {
+                    tx.execute(
+                        "DELETE FROM pins WHERE workspace=? AND message=?",
+                        params![w, message_id],
+                    )?;
                     let raw: Option<String> = tx
                         .query_row(
                             "SELECT json FROM messages WHERE workspace=? AND id=?",
@@ -238,6 +289,27 @@ impl Cache {
             s.query_map([w], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as usize)))?
                 .collect::<rusqlite::Result<_>>()?,
         )
+    }
+    pub fn pins(&self, w: &str) -> Result<Vec<shared_proto::PinnedMessage>> {
+        let mut s=self.0.prepare("SELECT m.json,p.pinned_by,p.created_at FROM pins p JOIN messages m ON m.workspace=p.workspace AND m.id=p.message WHERE p.workspace=? AND m.deleted=0 ORDER BY p.created_at DESC")?;
+        let rows = s
+            .query_map([w], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|(raw, user, created_at)| {
+                Ok(shared_proto::PinnedMessage {
+                    message: serde_json::from_str(&raw)?,
+                    pinned_by: user,
+                    created_at,
+                })
+            })
+            .collect()
     }
     pub fn search(&self, w: &str, text: &str) -> Result<Vec<MessageDto>> {
         if text.trim().is_empty() {

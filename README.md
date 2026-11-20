@@ -34,13 +34,16 @@ All paths below start with `/api/v1`. Except registration and login, requests re
 | --- | --- | --- |
 | POST | `/auth/register` | `email`, `password` (12–1024 bytes), optional `display_name` |
 | POST | `/auth/login` | `email`, `password`; returns `token`, `user_id` |
-| GET | `/users/me` | Current profile |
+| GET, PATCH | `/users/me` | Current profile; update `display_name` and optional unique `handle` |
 | POST | `/users/me/avatar` | Multipart raster image, up to 5 MiB |
 | GET | `/users/{u}/avatar/{key}` | Avatar; self or shared workspace member |
 | GET | `/workspaces/{w}/attachments/{a}/preview` | Authorized server-generated PNG thumbnail |
 | GET, POST | `/workspaces` | Create: `slug`, `name` |
 | GET, POST | `/workspaces/{w}/members` | `email` of registered user; owner/admin only |
 | GET, POST | `/workspaces/{w}/channels` | Create: `name`, optional `topic`, `is_private` |
+| POST | `/workspaces/{w}/directs` | `user_id` of another workspace member; creates/reuses a private two-person conversation |
+| GET, POST | `/workspaces/{w}/channels/{c}/members` | List members / add `user_id`; creator or an invited workspace admin manages access |
+| DELETE | `/workspaces/{w}/channels/{c}/members/{u}` | Remove a member; direct-message participants cannot change |
 | GET | `/workspaces/{w}/channels/{c}/messages` | `before_seq`, `limit` (max 200), newest first |
 | GET | `/workspaces/{w}/search` | `q` (literal phrase with stemming), `limit` |
 | GET | `/workspaces/{w}/sync` | `since_seq`, `limit` (max 1000) |
@@ -48,7 +51,7 @@ All paths below start with `/api/v1`. Except registration and login, requests re
 | GET | `/workspaces/{w}/attachments/{a}` | Authenticated download |
 | GET | `/workspaces/{w}/ws` | WebSocket upgrade |
 
-Workspace members can access public channels; private channels currently allow their creator. Adding members to private channels is not yet exposed. Unattached uploads are accessible only to the uploader; attached files follow channel permissions. Downloads use attachment disposition and `nosniff`.
+Workspace members can access public channels. Private channels allow invited members; the creator can manage membership. Invited workspace owners/admins can also manage membership through the API. Direct messages always have exactly two workspace members, and only those two can read, search, sync, or subscribe to their messages. Unattached uploads are accessible only to the uploader; attached files follow channel permissions. Downloads use attachment disposition and `nosniff`.
 
 Example:
 
@@ -62,7 +65,15 @@ curl -s localhost:3000/api/v1/workspaces \
   -d '{"slug":"engineering","name":"Engineering"}'
 ```
 
+## Profiles, handles, and appearance
+
+Open **Settings** in the desktop sidebar to set your display name and unique `@handle`, change your profile picture, and select Dark or Light appearance. Handles are case-insensitive, normalized to lowercase, and contain 3–32 ASCII letters, digits, or underscores starting with a letter. Clearing a handle releases it. Appearance is saved per device; profiles and handles are stored on the server. Existing accounts and caches migrate automatically without losing history.
+
+Use **+** beside Channels and choose Private, then **Members** in the channel header to add teammates. Use **+** beside Direct Messages to search workspace teammates by name or handle. Repeated requests for the same pair reuse the existing DM.
+
 ## WebSocket and reconnect
+
+Catalog changes emit an ephemeral `channels_changed` frame. Clients reload their channel catalog, purge messages/outbox/search for channels they can no longer access, and replay the event log when access to a channel is newly granted.
 
 Wire enums live in `crates/shared-proto`; frames use `{"type":"send_message","payload":{...}}`. All message, edit, delete, reaction, read-state, typing, and ping client variants are handled. Committed mutations are broadcast in writer order. Message authors alone can edit/delete their messages. Rejected sends include an optional `client_msg_id` in the Error frame so clients can identify the failed outbox item. Send IDs are idempotent within a workspace; retrying acknowledges the canonical row without inserting or broadcasting again. Clients should generate a UUIDv7/ULID `client_msg_id`.
 
@@ -89,4 +100,4 @@ S3 configuration uses the [object_store AWS environment configuration](https://d
 
 ## Scope
 
-This implements the backend, shared protocol, offline client engine, and GPUI desktop client. Mobile and UniFFI exports are subsequent milestones. Magic links, push delivery, presence tracking, channel invitations, session revocation, and upload garbage collection are not implemented. The current manager retains opened workspaces until shutdown; idle eviction is a future scaling improvement. FTS latency and message throughput have not been benchmarked. Use one server process per data directory; actor serialization is in-process.
+This implements the backend, shared protocol, offline client engine, and GPUI desktop client. Mobile and UniFFI exports are subsequent milestones. Magic links, push delivery, presence tracking, session revocation, and upload garbage collection are not implemented. The current manager retains opened workspaces until shutdown; idle eviction is a future scaling improvement. FTS latency and message throughput have not been benchmarked. Use one server process per data directory; actor serialization is in-process.

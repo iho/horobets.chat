@@ -4,6 +4,7 @@ pub fn render(
     window: &mut Window,
     cx: &mut Context<Messenger>,
 ) -> impl IntoElement + use<> {
+    let colors = palette(cx);
     let entity = cx.entity();
     div()
         .w_full()
@@ -12,8 +13,8 @@ pub fn render(
         .flex()
         .flex_col()
         .border_l_1()
-        .border_color(rgb(BORDER))
-        .bg(rgb(PANEL))
+        .border_color(rgb(colors.border))
+        .bg(rgb(colors.bg))
         .child(
             div()
                 .h(px(68.))
@@ -23,18 +24,20 @@ pub fn render(
                 .items_center()
                 .justify_between()
                 .border_b_1()
-                .border_color(rgb(BORDER))
+                .border_color(rgb(colors.border))
                 .child(
                     div()
                         .text_lg()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child("Thread"),
                 )
-                .child(Button::new("close-thread").label("×").on_click(cx.listener(
-                    |this, _, _, cx| {
-                        this.command(Command::SelectThread(None), cx);
-                    },
-                ))),
+                .child(
+                    secondary_button("close-thread")
+                        .label("×")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.command(Command::SelectThread(None), cx);
+                        })),
+                ),
         )
         .child(
             list(this.thread_list.clone(), move |ix, window, cx| {
