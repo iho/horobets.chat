@@ -11,6 +11,15 @@
         ],
         "createdAt": "2026-11-21T08:28:45.867Z",
         "reason": "Agent verified the rendered external stylesheet: all text color/background combinations have contrast at least 7.28:1; the HTML-only finding does not resolve the stylesheet."
+      },
+      {
+        "rule": "cramped-padding",
+        "value": "*",
+        "files": [
+          "website/index.html"
+        ],
+        "createdAt": "2026-11-21T08:30:58.387Z",
+        "reason": "Agent reviewed desktop and phone captures plus styles.css: chat header/messages use 24px horizontal padding, caption 24px, terminal 20px, and buttons 18px. Zero-padding outer wrappers delegate insets to these children; 32px centered initial avatars are intentionally compact demo badges. No text is flush against a container boundary."
       }
     ]
   }
