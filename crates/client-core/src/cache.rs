@@ -16,6 +16,8 @@ impl Cache {
         CREATE TABLE IF NOT EXISTS pins(workspace TEXT,message TEXT,channel TEXT,pinned_by TEXT,created_at INTEGER NOT NULL,PRIMARY KEY(workspace,message));
         CREATE TABLE IF NOT EXISTS reactions(workspace TEXT,message TEXT,user TEXT,emoji TEXT,PRIMARY KEY(workspace,message,user,emoji));
         CREATE TABLE IF NOT EXISTS reads(workspace TEXT,channel TEXT,seq INTEGER NOT NULL,PRIMARY KEY(workspace,channel));
+        CREATE TABLE IF NOT EXISTS pending_reads(workspace TEXT,channel TEXT,seq INTEGER NOT NULL,PRIMARY KEY(workspace,channel));
+        CREATE TABLE IF NOT EXISTS notification_seen(workspace TEXT,id TEXT,created_at INTEGER NOT NULL,PRIMARY KEY(workspace,id));
         CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(body,tokenize='porter unicode61');
         CREATE TRIGGER IF NOT EXISTS messages_ai AFTER INSERT ON messages WHEN new.deleted=0 BEGIN INSERT INTO messages_fts(rowid,body) VALUES(new.rowid,new.body); END;
         CREATE TRIGGER IF NOT EXISTS messages_au AFTER UPDATE ON messages BEGIN DELETE FROM messages_fts WHERE rowid=old.rowid; INSERT INTO messages_fts(rowid,body) SELECT new.rowid,new.body WHERE new.deleted=0; END;
@@ -65,6 +67,10 @@ impl Cache {
             )?;
             tx.execute("DELETE FROM outbox WHERE workspace=? AND json_extract(event,'$.payload.channel_id')=?",params![w,removed])?;
             tx.execute(
+                "DELETE FROM pending_reads WHERE workspace=? AND channel=?",
+                params![w, removed],
+            )?;
+            tx.execute(
                 "DELETE FROM reads WHERE workspace=? AND channel=?",
                 params![w, removed],
             )?;
@@ -96,9 +102,21 @@ impl Cache {
         Ok(self.metadata(&format!("cursor:{w}"))?.unwrap_or(0))
     }
     pub fn apply_page(&mut self, w: &str, events: &[ServerEvent], cursor: i64) -> Result<()> {
+        let own_user: Option<String> = self.metadata("user_id")?;
         let tx = self.0.transaction()?;
         for event in events {
             match event {
+                ServerEvent::ReadStateUpdated {
+                    channel_id,
+                    user_id,
+                    last_read_seq,
+                } if Some(user_id) == own_user.as_ref() => {
+                    tx.execute("INSERT INTO reads VALUES(?,?,?) ON CONFLICT(workspace,channel) DO UPDATE SET seq=MAX(seq,excluded.seq)",params![w,channel_id,last_read_seq])?;
+                    tx.execute(
+                        "DELETE FROM pending_reads WHERE workspace=? AND channel=? AND seq<=?",
+                        params![w, channel_id, last_read_seq],
+                    )?;
+                }
                 ServerEvent::PinUpdated {
                     channel_id,
                     message_id,
@@ -325,8 +343,49 @@ impl Cache {
             .collect()
     }
     pub fn mark_read(&self, w: &str, ch: &str) -> Result<()> {
-        self.0.execute("INSERT INTO reads VALUES(?,?,COALESCE((SELECT MAX(seq) FROM messages WHERE workspace=?1 AND channel=?2),0)) ON CONFLICT(workspace,channel) DO UPDATE SET seq=excluded.seq",params![w,ch])?;
+        let tx = self.0.unchecked_transaction()?;
+        tx.execute("INSERT INTO reads VALUES(?,?,COALESCE((SELECT MAX(seq) FROM messages WHERE workspace=?1 AND channel=?2),0)) ON CONFLICT(workspace,channel) DO UPDATE SET seq=MAX(seq,excluded.seq)",params![w,ch])?;
+        tx.execute("INSERT INTO pending_reads SELECT workspace,channel,seq FROM reads WHERE workspace=? AND channel=? ON CONFLICT(workspace,channel) DO UPDATE SET seq=MAX(seq,excluded.seq)",params![w,ch])?;
+        tx.commit()?;
         Ok(())
+    }
+    pub fn pending_reads(&self, w: &str) -> Result<Vec<(String, i64)>> {
+        let mut q = self
+            .0
+            .prepare("SELECT channel,seq FROM pending_reads WHERE workspace=?")?;
+        Ok(q.query_map([w], |r| Ok((r.get(0)?, r.get(1)?)))?
+            .collect::<rusqlite::Result<_>>()?)
+    }
+    pub fn needs_read(&self, w: &str, ch: &str) -> Result<bool> {
+        Ok(self.0.query_row("SELECT COALESCE((SELECT MAX(seq) FROM messages WHERE workspace=?1 AND channel=?2),0)>COALESCE((SELECT seq FROM reads WHERE workspace=?1 AND channel=?2),0)",params![w,ch],|r|r.get(0))?)
+    }
+    pub fn claim_notification(&self, w: &str, m: &MessageDto) -> Result<bool> {
+        let fresh = self.0.execute(
+            "INSERT OR IGNORE INTO notification_seen VALUES(?,?,?)",
+            params![w, m.id, m.created_at],
+        )? > 0;
+        self.0.execute("DELETE FROM notification_seen WHERE rowid IN (SELECT rowid FROM notification_seen WHERE workspace=? ORDER BY created_at DESC LIMIT -1 OFFSET 1000)",[w])?;
+        Ok(fresh)
+    }
+    pub fn message(&self, w: &str, id: &str) -> Result<Option<MessageDto>> {
+        let raw: Option<String> = self
+            .0
+            .query_row(
+                "SELECT json FROM messages WHERE workspace=? AND id=?",
+                params![w, id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        raw.map(|s| Ok(serde_json::from_str(&s)?)).transpose()
+    }
+    pub fn unread_messages(&self, w: &str, user: &str) -> Result<Vec<MessageDto>> {
+        let mut q=self.0.prepare("SELECT m.json FROM messages m JOIN channels ch ON ch.workspace=m.workspace AND ch.id=m.channel LEFT JOIN reads r ON r.workspace=m.workspace AND r.channel=m.channel WHERE m.workspace=? AND m.seq>COALESCE(r.seq,0) AND m.deleted=0 AND json_extract(m.json,'$.user_id')!=? ORDER BY m.seq DESC LIMIT 200")?;
+        let rows = q
+            .query_map(params![w, user], |r| r.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.into_iter()
+            .map(|raw| Ok(serde_json::from_str(&raw)?))
+            .collect()
     }
     pub fn unread(&self, w: &str, user: &str) -> Result<std::collections::BTreeMap<String, i64>> {
         let mut s=self.0.prepare("SELECT m.channel,COUNT(*) FROM messages m LEFT JOIN reads r ON r.workspace=m.workspace AND r.channel=m.channel WHERE m.workspace=? AND m.seq>COALESCE(r.seq,0) AND m.deleted=0 AND json_extract(m.json,'$.user_id')!=? GROUP BY m.channel")?;

@@ -8,47 +8,59 @@ struct ComposerView: View {
     @State private var showTopic = false
     var draft: Binding<String> { Binding(get: { core.draft(thread) }, set: { core.setDraft($0, thread: thread) }) }
     var matches: [Completion] { MessageText.suggestions(core.draft(thread), users: core.snapshot.users, channels: core.snapshot.channels) }
+    var canSend: Bool { !core.uploading && (!core.draft(thread).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !core.snapshot.attachments.isEmpty) }
     var body: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: ChatLayout.gap) {
             if !preview && !matches.isEmpty { completions }
             if !core.snapshot.attachments.isEmpty { attachments }
             if core.uploading { HStack { ProgressView(); Text("Uploading…").font(.caption); Spacer() } }
-            if showTopic && !thread { TextField("Topic (optional)", text: $topic).font(.caption).textFieldStyle(.roundedBorder) }
+            if showTopic && !thread { TextField("Topic (optional)", text: $topic).font(.subheadline).textFieldStyle(.roundedBorder) }
             if preview {
-                ScrollView { MarkdownBody(core: core, text: core.draft(thread)).padding(8) }.frame(maxHeight: 180)
-            } else {
-                TextField(thread ? "Reply…" : "Write a message…", text: draft, axis: .vertical)
-                    .lineLimit(6).textFieldStyle(.plain).padding(.horizontal, 12).padding(.vertical, 10)
-                    .background(Color.primary.opacity(0.045)).clipShape(RoundedRectangle(cornerRadius: 12))
+                ScrollView { MarkdownBody(core: core, text: core.draft(thread)).padding(8) }.frame(maxHeight: 160)
             }
-            HStack(spacing: 16) {
-                Menu("+ Attach") {
-                    PhotoUploadButton(core: core, avatar: false)
-                    Button("Choose file") { core.chooseFile(avatar: false) }
-                }.disabled(!core.snapshot.connected || core.uploading)
-                Menu("Format") {
-                    Button("Bold") { append("**bold text**") }
-                    Button("Italic") { append("*italic text*") }
-                    Button("Inline code") { append("`code`") }
-                    Button("Link") { append("[link text](https://example.com)") }
-                    Button("Heading") { append("\n## Heading\n") }
-                    Button("Quote") { append("\n> Quote\n") }
-                    Button("List") { append("\n- List item\n") }
-                    Button("Code block") { append("\n```\ncode\n```\n") }
-                    Button("Mention someone") { append("@") }
-                    Button("Link a channel") { append("#") }
+            HStack(alignment: .bottom, spacing: 4) {
+                Menu {
+                    PhotoUploadButton(core: core, avatar: false).disabled(!core.snapshot.connected || core.uploading)
+                    Button("Choose file") { core.chooseFile(avatar: false) }.disabled(!core.snapshot.connected || core.uploading)
+                    Divider()
+                    Menu("Formatting") {
+                        Button("Bold") { append("**bold text**") }
+                        Button("Italic") { append("*italic text*") }
+                        Button("Inline code") { append("`code`") }
+                        Button("Link") { append("[link text](https://example.com)") }
+                        Button("Heading") { append("\n## Heading\n") }
+                        Button("Quote") { append("\n> Quote\n") }
+                        Button("List") { append("\n- List item\n") }
+                        Button("Code block") { append("\n```\ncode\n```\n") }
+                        Button("Mention someone") { append("@") }
+                        Button("Link a channel") { append("#") }
+                    }.disabled(preview)
                     if !thread { Button(showTopic ? "Hide topic" : "Add topic") { showTopic.toggle() } }
-                }.disabled(preview)
-                Button(preview ? "Write" : "Preview") { preview.toggle() }.font(.caption)
-                Spacer(minLength: 0)
-                Button("Send") {
+                    Button(preview ? "Write message" : "Preview Markdown") { preview.toggle() }
+                } label: {
+                    Label("Attach and format", systemImage: "plus").labelStyle(.iconOnly).accessibilityLabel("Attach and format")
+                        .frame(width: ChatLayout.target, height: ChatLayout.target)
+                }
+                if preview {
+                    Button("Write message") { preview = false }.font(.subheadline).frame(maxWidth: .infinity, minHeight: ChatLayout.target, alignment: .leading)
+                } else {
+                    TextField(thread ? "Reply…" : "Message…", text: draft, prompt: Text(thread ? "Reply…" : "Message…").foregroundColor(.secondary), axis: .vertical)
+                        .lineLimit(5, reservesSpace: false).textFieldStyle(.plain).font(.body)
+                        .composerTextInsets().frame(minHeight: ChatLayout.target)
+                }
+                Button {
                     if core.send(core.draft(thread), thread: thread, topic: topic) { core.setDraft("", thread: thread); preview = false }
-                }.buttonStyle(.borderedProminent)
-                    .disabled(core.uploading || (core.draft(thread).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && core.snapshot.attachments.isEmpty))
-            }.font(.caption)
+                } label: {
+                    Label(thread ? "Send reply" : "Send message", systemImage: "paperplane.fill").labelStyle(.iconOnly).accessibilityLabel(thread ? "Send reply" : "Send message")
+                        .font(.headline).frame(width: ChatLayout.target, height: ChatLayout.target)
+                        .foregroundStyle(canSend ? Color.primary : Color.secondary)
+                        .background(canSend ? Color.teal.opacity(0.2) : Color.primary.opacity(0.04)).clipShape(Circle())
+                }.buttonStyle(.plain).disabled(!canSend)
+            }
         }
-        .padding(12).background(Color.primary.opacity(0.025))
-        .overlay(alignment: .top) { Rectangle().fill(Color.primary.opacity(0.1)).frame(height: 1) }
+        .padding(.horizontal, ChatLayout.gutter).padding(.vertical, 8)
+        .background(Color.primary.opacity(0.025))
+        .overlay(alignment: .top) { Divider() }
         .onChange(of: core.draftKey(thread)) { _, _ in topic = ""; preview = false }
     }
     private func append(_ value: String) {

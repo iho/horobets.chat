@@ -13,6 +13,8 @@ final class Callback: SnapshotListener, @unchecked Sendable {
             let state = try decoder.decode(MobileSnapshot.self, from: Data(snapshotJson.utf8))
             XCTAssertNil(state.userId)
             XCTAssertTrue(state.messages.isEmpty)
+            XCTAssertNotNil(state.unreadMessages)
+            XCTAssertNotNil(state.notifications)
             expectation.fulfill()
         } catch { XCTFail("Cannot decode Rust snapshot: \(error)") }
     }
@@ -104,7 +106,9 @@ final class MobileParityTests: XCTestCase {
         {"server":"http://server","workspaces":[],"channels":[],"users":[],"messages":[],"thread_messages":[],"unread":{},"reply_counts":{},"search_results":[],"connected":true,"busy":false,"has_older":false,
         "avatars":{"u":"/private/avatar.png"},"image_previews":{"a":"/private/preview.png"},
         "attachments":[],"message_attachments":{"m":[{"id":"a","message_id":"m","filename":"photo.png","mime_type":"image/png","size_bytes":100}]},
-        "people":[],"pins":[],"moderation":[],"channel_members":["u"]}
+        "people":[],"pins":[],"moderation":[],"channel_members":["u"],
+        "unread_messages":[{"id":"m","channel_id":"general","user_id":"other","body_md":"Unread","created_at":1}],
+        "notifications":[{"workspace_id":"w","message":{"id":"m","channel_id":"general","user_id":"other","body_md":"Unread","created_at":1},"author":"Alex"}],"opened_message":"m"}
         """
         let decoder = JSONDecoder(); decoder.keyDecodingStrategy = .convertFromSnakeCase
         let snapshot = try decoder.decode(MobileSnapshot.self, from: Data(json.utf8))
@@ -113,6 +117,10 @@ final class MobileParityTests: XCTestCase {
         XCTAssertTrue(snapshot.messageAttachments["m"]![0].isImage)
         XCTAssertEqual(snapshot.messageAttachments["m"]![0].filename, "photo.png")
         XCTAssertEqual(snapshot.channelMembers, ["u"])
+        XCTAssertEqual(snapshot.unreadMessages?.first?.id, "m")
+        XCTAssertEqual(snapshot.notifications?.first?.workspaceId, "w")
+        XCTAssertEqual(snapshot.notifications?.first?.author, "Alex")
+        XCTAssertEqual(snapshot.openedMessage, "m")
     }
     @MainActor func testModeratorRightsDoNotExtendIntoOtherPeoplesDirectMessages() {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

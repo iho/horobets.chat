@@ -30,7 +30,7 @@ pub fn render(
                     .flex_col()
                     .justify_center()
                     .items_center()
-                    .gap_3()
+                    .gap(px(CHAT_GAP))
                     .child(
                         div()
                             .size(px(72.))
@@ -86,12 +86,12 @@ pub fn render(
                             .when(!same_day, |v| {
                                 v.child(
                                     div()
-                                        .px_6()
-                                        .pt_5()
-                                        .pb_2()
+                                        .px(px(CHAT_GUTTER))
+                                        .pt_3()
+                                        .pb_1()
                                         .flex()
                                         .items_center()
-                                        .gap_3()
+                                        .gap(px(CHAT_GAP))
                                         .child(div().flex_1().h(px(1.)).bg(rgb(colors.border)))
                                         .child(muted(
                                             day.map(|d| {
@@ -165,29 +165,36 @@ pub fn row(
     let pin_id = id.clone();
     let moderated_delete = id.clone();
     div()
+        .relative()
+        .min_h(px(32.))
         .group("message-row")
         .id(SharedString::from(format!(
             "{}-{}",
             if in_thread { "thread" } else { "feed" },
             id
         )))
-        .px_6()
-        .pt(if grouped { px(2.) } else { px(16.) })
-        .pb_2()
+        .px(px(CHAT_GUTTER))
+        .pt(if grouped { px(2.) } else { px(8.) })
+        .pb_1()
         .flex()
-        .gap_3()
+        .gap(px(CHAT_GAP))
         .hover(|v| v.bg(rgb(colors.hover)))
-        .child(div().w(px(32.)).flex_shrink_0().when(!grouped, |v| {
-            v.child(
-                div()
-                    .id(SharedString::from(format!("profile-avatar-{id}")))
-                    .cursor_pointer()
-                    .child(super::avatar(this, &m.user_id, 32., cx))
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.open_modal(Modal::Profile(profile_avatar.clone()), window, cx)
-                    })),
-            )
-        }))
+        .child(
+            div()
+                .w(px(CHAT_AVATAR))
+                .flex_shrink_0()
+                .when(!grouped, |v| {
+                    v.child(
+                        div()
+                            .id(SharedString::from(format!("profile-avatar-{id}")))
+                            .cursor_pointer()
+                            .child(super::avatar(this, &m.user_id, CHAT_AVATAR, cx))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_modal(Modal::Profile(profile_avatar.clone()), window, cx)
+                            })),
+                    )
+                }),
+        )
         .child(
             div()
                 .flex_1()
@@ -200,7 +207,7 @@ pub fn row(
                         div()
                             .flex()
                             .items_center()
-                            .gap_3()
+                            .gap(px(CHAT_GAP))
                             .child(
                                 div()
                                     .id(SharedString::from(format!("profile-name-{id}")))
@@ -315,24 +322,47 @@ pub fn row(
                         }),
                     ))
                 })
+                .when(!deleted && !in_thread && replies > 0, |v| {
+                    let parent = parent.clone();
+                    v.child(
+                        div().child(
+                            secondary_button(SharedString::from(format!("replies-{id}")))
+                                .small()
+                                .label(format!("{replies} replies"))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.command(Command::SelectThread(Some(parent.clone())), cx);
+                                    this.reply.update(cx, |input, cx| input.focus(window, cx));
+                                })),
+                        ),
+                    )
+                })
                 .when(
                     !deleted && matches!(cached.status, OutboxStatus::Sent),
                     |v| {
                         v.child(
                             div()
+                                .absolute()
+                                .top_0()
+                                .right_4()
+                                .mt_1()
                                 .flex()
-                                .flex_wrap()
+                                .items_center()
                                 .gap_1()
+                                .p_1()
+                                .rounded_md()
+                                .bg(rgb(colors.bg))
+                                .border_1()
+                                .border_color(rgb(colors.border))
                                 .invisible()
                                 .group_hover("message-row", |v| v.visible())
-                                .when(replies > 0, |v| v.visible())
                                 .when(!in_thread, |v| {
                                     v.child(
                                         secondary_button(SharedString::from(format!("reply-{id}")))
+                                            .small()
                                             .label(if replies > 0 {
                                                 format!("{replies} replies →")
                                             } else {
-                                                "Reply in thread".into()
+                                                "Reply".into()
                                             })
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.command(
@@ -347,7 +377,8 @@ pub fn row(
                                 })
                                 .child(
                                     secondary_button(SharedString::from(format!("react-{id}")))
-                                        .label("+ React")
+                                        .small()
+                                        .label("React")
                                         .tooltip("Choose an emoji reaction")
                                         .disabled(!this.snapshot.connected)
                                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -361,6 +392,7 @@ pub fn row(
                                 .when(can_pin, |v| {
                                     v.child(
                                         secondary_button(SharedString::from(format!("pin-{id}")))
+                                            .small()
                                             .label(if pinned { "Unpin" } else { "Pin" })
                                             .disabled(!this.snapshot.connected)
                                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -379,6 +411,7 @@ pub fn row(
                                         secondary_button(SharedString::from(format!(
                                             "moderate-delete-{id}"
                                         )))
+                                        .small()
                                         .label("Delete")
                                         .on_click(
                                             cx.listener(move |this, _, window, cx| {
@@ -394,6 +427,7 @@ pub fn row(
                                 .when(mine, |v| {
                                     v.child(
                                         secondary_button(SharedString::from(format!("edit-{id}")))
+                                            .small()
                                             .label("Edit")
                                             .on_click(cx.listener(move |this, _, window, cx| {
                                                 this.open_modal(
@@ -410,6 +444,7 @@ pub fn row(
                                         secondary_button(SharedString::from(format!(
                                             "delete-{id}"
                                         )))
+                                        .small()
                                         .label("Delete")
                                         .on_click(
                                             cx.listener(move |this, _, window, cx| {

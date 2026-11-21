@@ -17,53 +17,34 @@ pub fn render(
     div()
         .relative()
         .flex_shrink_0()
-        .m_4()
-        .p_3()
-        .rounded_xl()
+        .mx(px(CHAT_GUTTER))
+        .mt_2()
+        .mb_3()
+        .p_2()
+        .rounded_lg()
         .bg(rgb(colors.panel))
         .border_1()
         .border_color(rgb(colors.border))
         .flex()
         .flex_col()
         .gap_2()
-        .when(!thread, |view| view.child(Input::new(&this.topic)))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_center()
-                .gap_1()
-                .children(FORMATS.iter().copied().enumerate().map(|(ix, format)| {
+        .when(!thread && this.show_topic, |view| {
+            view.child(Input::new(&this.topic))
+        })
+        .when(this.formatting_expanded[usize::from(thread)], |view| {
+            view.child(div().flex().flex_wrap().items_center().gap_1().children(
+                FORMATS.iter().copied().enumerate().map(|(ix, format)| {
                     secondary_button(SharedString::from(format!("markdown-{thread}-{ix}")))
+                        .small()
                         .label(format.label)
                         .tooltip(format.hint)
                         .disabled(preview)
                         .on_click(cx.listener(move |this, _, window, cx| {
                             apply_format(this, thread, format, window, cx);
                         }))
-                }))
-                .child(
-                    secondary_button(if thread {
-                        "reply-preview"
-                    } else {
-                        "message-preview"
-                    })
-                    .label(if preview { "Write" } else { "Preview" })
-                    .on_click(cx.listener(move |this, _, window, cx| {
-                        this.markdown_preview[usize::from(thread)] =
-                            !this.markdown_preview[usize::from(thread)];
-                        if !this.markdown_preview[usize::from(thread)] {
-                            let input = if thread {
-                                this.reply.clone()
-                            } else {
-                                this.composer.clone()
-                            };
-                            input.update(cx, |input, cx| input.focus(window, cx));
-                        }
-                        cx.notify();
-                    })),
-                ),
-        )
+                }),
+            ))
+        })
         .when(preview, |v| {
             v.child(
                 div()
@@ -168,29 +149,91 @@ pub fn render(
                 .justify_between()
                 .gap_2()
                 .child(
-                    secondary_button(if thread {
-                        "attach-reply"
-                    } else {
-                        "attach-message"
-                    })
-                    .label("+ Attach")
-                    .on_click(cx.listener(|this, _, _, cx| this.choose_file(cx))),
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .flex_1()
+                        .min_w_0()
+                        .items_center()
+                        .gap_1()
+                        .child(
+                            secondary_button(if thread {
+                                "attach-reply"
+                            } else {
+                                "attach-message"
+                            })
+                            .small()
+                            .label("+ Attach")
+                            .on_click(cx.listener(|this, _, _, cx| this.choose_file(cx))),
+                        )
+                        .child(
+                            secondary_button(if thread {
+                                "reply-format"
+                            } else {
+                                "message-format"
+                            })
+                            .small()
+                            .label("Format")
+                            .tooltip("Show Markdown formatting tools")
+                            .on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    this.formatting_expanded[usize::from(thread)] =
+                                        !this.formatting_expanded[usize::from(thread)];
+                                    cx.notify();
+                                },
+                            )),
+                        )
+                        .when(!thread, |v| {
+                            v.child(
+                                secondary_button("message-topic")
+                                    .small()
+                                    .label(if this.topic.read(cx).value().is_empty() {
+                                        "Topic"
+                                    } else {
+                                        "Topic •"
+                                    })
+                                    .tooltip("Show or hide the optional topic")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.show_topic = !this.show_topic;
+                                        cx.notify();
+                                    })),
+                            )
+                        })
+                        .child(
+                            secondary_button(if thread {
+                                "reply-preview"
+                            } else {
+                                "message-preview"
+                            })
+                            .small()
+                            .label(if preview { "Write" } else { "Preview" })
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| {
+                                    this.markdown_preview[usize::from(thread)] =
+                                        !this.markdown_preview[usize::from(thread)];
+                                    if !this.markdown_preview[usize::from(thread)] {
+                                        let input = if thread {
+                                            this.reply.clone()
+                                        } else {
+                                            this.composer.clone()
+                                        };
+                                        input.update(cx, |input, cx| input.focus(window, cx));
+                                    }
+                                    cx.notify();
+                                },
+                            )),
+                        ),
                 )
                 .child(
                     Button::new(if thread { "send-reply" } else { "send-message" })
                         .primary()
-                        .label(if thread { "Reply" } else { "Send →" })
+                        .small()
+                        .label(if thread { "Reply" } else { "Send" })
+                        .tooltip("Enter to send · Shift+Enter for a new line")
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.submit_message(thread, window, cx)
                         })),
                 ),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_between()
-                .child(muted("Markdown supported"))
-                .child(muted("Enter to send · Shift+Enter for newline")),
         )
         .on_drop(cx.listener(|this, paths: &ExternalPaths, _, cx| {
             for path in paths.paths() {

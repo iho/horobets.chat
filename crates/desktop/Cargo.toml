@@ -10,6 +10,7 @@ gpui-component = "=0.5.1"
 client-core = { path = "../client-core" }
 shared-proto = { path = "../shared-proto" }
 anyhow = "1"
+async-channel = "2"
 directories = "6"
 gpui-component-assets = "=0.5.1"
 chrono = "0.4"

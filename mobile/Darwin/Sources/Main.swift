@@ -63,11 +63,11 @@ typealias AppType = NSApplication
     // support for SkipNotify.fetchNotificationToken()
 
     func application(_ application: UIApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
-        NotificationCenter.default.post(name: NSNotification.Name("didRegisterForRemoteNotificationsWithDeviceToken"), object: application, userInfo: ["deviceToken": deviceToken])
+        AppDelegate.shared.onNotificationToken(deviceToken)
     }
 
     func application(_ application: UIApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
-        NotificationCenter.default.post(name: NSNotification.Name("didFailToRegisterForRemoteNotificationsWithError"), object: application, userInfo: ["error": error])
+        AppDelegate.shared.onNotificationRegistrationError(error.localizedDescription)
     }
     #elseif canImport(AppKit)
     func applicationWillFinishLaunching(_ notification: Notification) {

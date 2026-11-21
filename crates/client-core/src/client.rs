@@ -34,8 +34,19 @@ pub struct CachedMessage {
     pub status: OutboxStatus,
     pub reactions: Vec<ReactionCount>,
 }
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct MessageNotification {
+    pub workspace_id: String,
+    pub message: MessageDto,
+    pub author: String,
+}
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Snapshot {
+    #[serde(default)]
+    pub unread_messages: Vec<MessageDto>,
+    pub opened_message: Option<String>,
+    #[serde(default)]
+    pub notifications: Vec<MessageNotification>,
     pub server: String,
     pub user_id: Option<String>,
     pub workspaces: Vec<Workspace>,
@@ -90,6 +101,24 @@ pub enum Command {
         register: bool,
     },
     Logout,
+    SetActivity {
+        active: bool,
+        reading: bool,
+    },
+    MarkChannelRead(String),
+    MarkAllRead,
+    OpenMessage {
+        workspace_id: String,
+        channel_id: String,
+        message_id: String,
+    },
+    RegisterDevice {
+        device_id: String,
+        platform: String,
+        token: String,
+        environment: String,
+    },
+    UnregisterDevice(String),
     SelectWorkspace(String),
     SelectChannel(String),
     SelectThread(Option<String>),
@@ -204,6 +233,8 @@ struct Worker {
     session: Option<Session>,
     cache: Option<Cache>,
     socket: Option<Socket>,
+    notification_socket: Option<Socket>,
+    notification_retry: Instant,
     view: Snapshot,
     updates: async_channel::Sender<Snapshot>,
     drain: async_channel::Receiver<Snapshot>,
@@ -215,6 +246,8 @@ struct Worker {
     last_directory_refresh: Instant,
     last_frame: Instant,
     last_ping: Instant,
+    active: bool,
+    reading: bool,
 }
 impl Worker {
     fn new(
@@ -231,6 +264,8 @@ impl Worker {
             session: None,
             cache: None,
             socket: None,
+            notification_socket: None,
+            notification_retry: Instant::now(),
             view: Snapshot::default(),
             updates,
             drain,
@@ -242,6 +277,8 @@ impl Worker {
             last_directory_refresh: Instant::now(),
             last_frame: Instant::now(),
             last_ping: Instant::now(),
+            active: false,
+            reading: false,
         }
     }
     fn publish(&mut self) {
@@ -293,10 +330,8 @@ impl Worker {
             } else {
                 vec![]
             };
-            if let Some(ch) = &self.view.channel {
-                cache.mark_read(w, ch)?;
-            }
             self.view.unread = cache.unread(w, &session.user_id)?;
+            self.view.unread_messages = cache.unread_messages(w, &session.user_id)?;
             self.view.reply_counts = cache.reply_counts(w)?;
             if let Some(ch) = &self.view.channel {
                 self.view.messages = cache.messages(w, ch, self.limit, &session.user_id)?;
@@ -366,6 +401,7 @@ impl Worker {
         self.media = account.join("media");
         std::fs::create_dir_all(&self.media)?;
         let cache = Cache::open(&account.join("cache.db"))?;
+        cache.set_metadata("user_id", &session.user_id)?;
         self.view = Snapshot {
             server: session.server.clone(),
             user_id: Some(session.user_id.clone()),
@@ -436,16 +472,142 @@ impl Worker {
         let mut tick = tokio::time::interval(Duration::from_secs(1));
         loop {
             tokio::select! {
-                command=commands.recv()=>{let Ok(command)=command else{break};self.view.error=None;let result=self.command(command).await;if let Err(e)=result{self.view.error=Some(e.to_string());}self.publish();},
+                command=commands.recv()=>{let Ok(command)=command else{break};self.view.error=None;let result=self.command(command).await.and(self.mark_current_read().await);if let Err(e)=result{self.view.error=Some(e.to_string());}self.publish();},
                 frame=async{match &mut self.socket{Some(s)=>s.next().await,None=>std::future::pending().await}}=>{let result=self.on_frame(frame).await;if let Err(e)=result{self.offline(e);}self.publish();},
-                _=tick.tick()=>{if self.socket.is_some(){if let Err(e)=self.heartbeat().await{self.offline(e);self.publish();}}else if self.session.is_some()&&self.socket.is_none()&&Instant::now()>=self.retry_at{if let Err(e)=self.connect().await{self.offline(e);}self.publish();}}
+                alert=async{match &mut self.notification_socket{Some(s)=>s.next().await,None=>std::future::pending().await}}=>{
+                    if let Err(_error)=self.on_notification_frame(alert).await{self.notification_socket=None;self.notification_retry=Instant::now()+Duration::from_secs(3);}
+                    self.publish();
+                },
+                _=tick.tick()=>{self.tick().await;}
             }
         }
         if let Some(mut socket) = self.socket.take() {
             let _ = socket.close(None).await;
         }
     }
+    async fn tick(&mut self) {
+        if self.session.is_some()
+            && self.notification_socket.is_none()
+            && Instant::now() >= self.notification_retry
+            && self.connect_notifications().await.is_err()
+        {
+            self.notification_retry = Instant::now() + Duration::from_secs(15);
+        }
+        if self.socket.is_some() {
+            match self.heartbeat().await {
+                Ok(()) => {}
+                Err(e) => {
+                    self.offline(e);
+                    self.publish();
+                }
+            }
+        } else if self.session.is_some() && Instant::now() >= self.retry_at {
+            if let Err(e) = self.connect().await {
+                self.offline(e);
+            }
+            self.publish();
+        }
+    }
+    async fn connect_notifications(&mut self) -> Result<()> {
+        let session = self.session.as_ref().context("Sign in first")?;
+        let mut url = url::Url::parse(&session.url("/users/me/notifications/ws"))?;
+        url.set_scheme(if url.scheme() == "https" { "wss" } else { "ws" })
+            .map_err(|_| anyhow::anyhow!("Invalid WebSocket URL"))?;
+        let mut request = url.as_str().into_client_request()?;
+        request.headers_mut().insert(
+            "authorization",
+            format!("Bearer {}", session.token).parse()?,
+        );
+        self.notification_socket = Some(
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                tokio_tungstenite::connect_async(request),
+            )
+            .await??
+            .0,
+        );
+        Ok(())
+    }
+    fn add_notification(
+        &mut self,
+        workspace: &str,
+        message: &MessageDto,
+        author: String,
+    ) -> Result<()> {
+        if let (Some(cache), Some(user)) = (&self.cache, &self.view.user_id)
+            && message.user_id != *user
+            && cache.claim_notification(workspace, message)?
+            && !(self.active
+                && self.reading
+                && self.view.workspace.as_deref() == Some(workspace)
+                && self.view.channel.as_ref() == Some(&message.channel_id))
+        {
+            self.view.notifications.push(MessageNotification {
+                workspace_id: workspace.into(),
+                message: message.clone(),
+                author,
+            });
+            if self.view.notifications.len() > 32 {
+                self.view.notifications.remove(0);
+            }
+        }
+        Ok(())
+    }
+    async fn on_notification_frame(
+        &mut self,
+        frame: Option<std::result::Result<Message, tokio_tungstenite::tungstenite::Error>>,
+    ) -> Result<()> {
+        match frame.context("Notification stream closed")?? {
+            Message::Text(raw) => {
+                if let ServerEvent::Notification {
+                    workspace_id,
+                    message,
+                    author,
+                } = serde_json::from_str(&raw)?
+                {
+                    self.add_notification(&workspace_id, &message, author)?;
+                    if self.view.workspace.as_ref() == Some(&workspace_id) {
+                        self.backfill().await?;
+                        self.mark_current_read().await?;
+                    }
+                }
+            }
+            Message::Ping(data) => {
+                if let Some(socket) = &mut self.notification_socket {
+                    socket.send(Message::Pong(data)).await?;
+                }
+            }
+            Message::Close(_) => anyhow::bail!("Notification stream closed"),
+            _ => {}
+        }
+        Ok(())
+    }
+    async fn mark_current_read(&mut self) -> Result<()> {
+        if let (Some(cache), Some(w), Some(ch)) =
+            (&self.cache, &self.view.workspace, &self.view.channel)
+        {
+            if self.active && self.reading && cache.needs_read(w, ch)? {
+                cache.mark_read(w, ch)?;
+            }
+            if let Some(socket) = &mut self.socket {
+                for (channel_id, last_read_seq) in cache.pending_reads(w)? {
+                    socket
+                        .send(Message::Text(
+                            serde_json::to_string(&ClientEvent::MarkRead {
+                                channel_id,
+                                last_read_seq,
+                            })?
+                            .into(),
+                        ))
+                        .await?;
+                }
+            }
+        }
+        Ok(())
+    }
     async fn heartbeat(&mut self) -> Result<()> {
+        self.mark_current_read().await?;
+
         if self.last_directory_refresh.elapsed() >= Duration::from_secs(30) {
             if let (Some(session), Some(w)) = (&self.session, &self.view.workspace) {
                 let people: Vec<shared_proto::MemberInfo> =
@@ -731,6 +893,19 @@ impl Worker {
                     }
                     _ => {
                         self.backfill().await?;
+                        if let ServerEvent::MessageCreated { message, .. } = &event
+                            && let Some(w) = self.view.workspace.clone()
+                        {
+                            let author = self
+                                .view
+                                .users
+                                .iter()
+                                .find(|u| u.id == message.user_id)
+                                .map(|u| u.display_name.clone())
+                                .unwrap_or_else(|| "New message".into());
+                            self.add_notification(&w, message, author)?;
+                        }
+                        self.mark_current_read().await?;
                         if let ServerEvent::MessageCreated {
                             client_msg_id: Some(id),
                             ..
@@ -771,7 +946,104 @@ impl Worker {
                 self.view.busy = false;
                 result?;
             }
+            Command::SetActivity { active, reading } => {
+                self.active = active;
+                self.reading = reading;
+            }
+            Command::OpenMessage {
+                workspace_id,
+                channel_id,
+                message_id,
+            } => {
+                self.refresh_catalog().await?;
+                anyhow::ensure!(
+                    self.view.workspaces.iter().any(|w| w.id == workspace_id),
+                    "Workspace is not available for this account"
+                );
+                if self.view.workspace.as_ref() != Some(&workspace_id) {
+                    self.socket = None;
+                    self.view.connected = false;
+                    self.view.workspace = Some(workspace_id.clone());
+                    self.view.channel = None;
+                    self.cache
+                        .as_ref()
+                        .unwrap()
+                        .set_metadata("workspace", &workspace_id)?;
+                    self.connect().await?;
+                }
+                anyhow::ensure!(
+                    self.view.channels.iter().any(|c| c.id == channel_id),
+                    "Conversation is no longer available"
+                );
+                self.view.channel = Some(channel_id.clone());
+                self.backfill().await?;
+                let m = self
+                    .cache
+                    .as_ref()
+                    .unwrap()
+                    .message(&workspace_id, &message_id)?
+                    .context("Message is no longer available")?;
+                anyhow::ensure!(
+                    m.channel_id == channel_id && m.deleted_at.is_none(),
+                    "Message is no longer available"
+                );
+                self.view.thread = Some(m.parent_id.unwrap_or(m.id));
+                self.view.opened_message = Some(message_id);
+                self.refresh_attachments().await?;
+            }
+            Command::MarkAllRead => {
+                if let (Some(cache), Some(w)) = (&self.cache, &self.view.workspace) {
+                    for channel in &self.view.channels {
+                        cache.mark_read(w, &channel.id)?;
+                    }
+                }
+            }
+            Command::MarkChannelRead(ch) => {
+                anyhow::ensure!(
+                    self.view.channels.iter().any(|c| c.id == ch),
+                    "Unknown channel"
+                );
+                if let (Some(cache), Some(w)) = (&self.cache, &self.view.workspace) {
+                    cache.mark_read(w, &ch)?;
+                }
+            }
+            Command::RegisterDevice {
+                device_id,
+                platform,
+                token,
+                environment,
+            } => {
+                let session = self.session.as_ref().context("Sign in first")?;
+                let response: serde_json::Value = sync::json(
+                    self.http
+                        .put(session.url(&format!("/users/me/devices/{device_id}")))
+                        .bearer_auth(&session.token)
+                        .json(
+                            &json!({"platform":platform,"token":token,"environment":environment}),
+                        ),
+                )
+                .await?;
+                self.view.notice = Some(
+                    if response["delivery_configured"].as_bool() == Some(true) {
+                        "Push notifications registered"
+                    } else {
+                        "Push device registered; server push configuration is required"
+                    }
+                    .into(),
+                );
+            }
+            Command::UnregisterDevice(id) => {
+                if let Some(session) = &self.session {
+                    let _: serde_json::Value = sync::json(
+                        self.http
+                            .delete(session.url(&format!("/users/me/devices/{id}")))
+                            .bearer_auth(&session.token),
+                    )
+                    .await?;
+                }
+            }
             Command::Logout => {
+                self.notification_socket = None;
                 self.socket = None;
                 self.in_flight = None;
                 self.session = None;
@@ -792,6 +1064,7 @@ impl Worker {
                 self.view.connected = false;
                 self.view.workspace = Some(w.clone());
                 self.view.channel = None;
+                self.view.notifications.clear();
                 self.view.thread = None;
                 self.view.messages.clear();
                 self.view.attachments.clear();
@@ -806,6 +1079,7 @@ impl Worker {
                 self.limit = 200;
             }
             Command::SelectChannel(ch) => {
+                self.view.opened_message = None;
                 anyhow::ensure!(
                     self.view.channels.iter().any(|c| c.id == ch),
                     "Unknown channel"
@@ -814,9 +1088,6 @@ impl Worker {
                 self.view.thread = None;
                 self.view.attachments.clear();
                 self.limit = 200;
-                if let (Some(cache), Some(w)) = (&self.cache, &self.view.workspace) {
-                    cache.mark_read(w, &ch)?;
-                }
                 if self.view.connected {
                     self.refresh_channel_members().await?;
                     self.refresh_attachments().await?;

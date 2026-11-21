@@ -19,6 +19,7 @@ pub enum Modal {
     Reaction(String),
     Manage,
     Pins,
+    Unread,
     Profile(String),
     ChannelEdit(String),
     ConfirmDelete(String),
@@ -27,6 +28,8 @@ pub enum Modal {
 pub struct PaneSizes {
     #[serde(default = "default_dark_mode")]
     pub dark_mode: bool,
+    #[serde(default)]
+    pub notifications_enabled: bool,
     pub sidebar: f32,
     pub thread: f32,
 }
@@ -37,6 +40,7 @@ impl Default for PaneSizes {
     fn default() -> Self {
         Self {
             dark_mode: true,
+            notifications_enabled: false,
             sidebar: 240.,
             thread: 360.,
         }
@@ -44,6 +48,11 @@ impl Default for PaneSizes {
 }
 pub struct Messenger {
     pub pane_sizes: PaneSizes,
+    pub notification_status: String,
+    notifications: Option<crate::notifications::Notifications>,
+    notified: std::collections::BTreeSet<String>,
+    last_activity: (bool, bool),
+    _notification_events: Option<Task<()>>,
     layout_path: std::path::PathBuf,
     pub engine: ClientEngine,
     pub snapshot: Snapshot,
@@ -54,6 +63,8 @@ pub struct Messenger {
     pub composer: Entity<InputState>,
     pub reply: Entity<InputState>,
     pub markdown_preview: [bool; 2],
+    pub formatting_expanded: [bool; 2],
+    pub show_topic: bool,
     pub completion_selection: [usize; 2],
     pub completion_scroll: [UniformListScrollHandle; 2],
     pub completion_dismissed: [bool; 2],
@@ -138,12 +149,12 @@ impl Messenger {
         let composer = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Write a message…")
-                .auto_grow(2, 8)
+                .auto_grow(1, 8)
         });
         let reply = cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("Reply in thread…")
-                .auto_grow(2, 6)
+                .auto_grow(1, 6)
         });
         let topic = cx.new(|cx| InputState::new(window, cx).placeholder("Optional topic"));
         let search =
@@ -151,6 +162,7 @@ impl Messenger {
         let name = cx.new(|cx| InputState::new(window, cx).placeholder("Name"));
         let slug = cx.new(|cx| InputState::new(window, cx).placeholder("workspace-slug"));
         let subscriptions = vec![
+            cx.observe_window_activation(window, |_, _, cx| cx.notify()),
             cx.observe(&composer, |_, _, cx| cx.notify()),
             cx.observe(&reply, |_, _, cx| cx.notify()),
             cx.subscribe_in(&composer, window, |this, _, event, _, cx| {
@@ -192,7 +204,30 @@ impl Messenger {
                 }
             }
         });
+        let notifications = crate::notifications::Notifications::start().ok();
+        let notification_events = notifications.as_ref().map(|service| {
+            let events = service.events.clone();
+            cx.spawn(async move |entity, cx| {
+                while let Ok(event) = events.recv().await {
+                    if entity
+                        .update(cx, |this, cx| this.notification_event(event, cx))
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+            })
+        });
         Self {
+            notification_status: if pane_sizes.notifications_enabled {
+                "Notifications enabled".into()
+            } else {
+                "Notifications are off".into()
+            },
+            notifications,
+            notified: Default::default(),
+            last_activity: (false, false),
+            _notification_events: notification_events,
             pane_sizes,
             layout_path,
             engine,
@@ -204,6 +239,8 @@ impl Messenger {
             composer,
             reply,
             markdown_preview: [false; 2],
+            formatting_expanded: [false; 2],
+            show_topic: false,
             completion_selection: [0; 2],
             completion_scroll: [
                 UniformListScrollHandle::new(),
@@ -257,7 +294,92 @@ impl Messenger {
             self.thread_list
                 .scroll_to_reveal_item(snapshot.thread_messages.len() - 1);
         }
+        if self.snapshot.user_id != snapshot.user_id || self.snapshot.server != snapshot.server {
+            self.notified.clear();
+            if let Some(service) = &mut self.notifications {
+                service.send(serde_json::json!({"type":"clear"}));
+            }
+        }
+        for notification in &snapshot.notifications {
+            let message = &notification.message;
+            if !self.notified.insert(message.id.clone()) || !self.pane_sizes.notifications_enabled {
+                continue;
+            }
+            let title = notification.author.clone();
+            let body = if message.body_md.is_empty() {
+                "Sent an attachment".into()
+            } else {
+                message.body_md.chars().take(180).collect::<String>()
+            };
+            if let Some(service) = &mut self.notifications {
+                service.send(serde_json::json!({"type":"notify","id":message.id,"title":title,"body":body,"route":{"user_id":snapshot.user_id,"workspace_id":notification.workspace_id,"channel_id":message.channel_id,"message_id":message.id}}));
+            }
+        }
+        self.notified = snapshot
+            .notifications
+            .iter()
+            .map(|n| n.message.id.clone())
+            .collect();
+        if self.pane_sizes.notifications_enabled
+            && (self.snapshot.unread != snapshot.unread
+                || self.snapshot.workspace != snapshot.workspace)
+        {
+            let channels = snapshot
+                .unread
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>();
+            if let Some(service) = &mut self.notifications {
+                service.send(serde_json::json!({"type":"clear_read","workspace":snapshot.workspace,"channels":channels}));
+            }
+        }
         self.snapshot = snapshot;
+        cx.notify();
+    }
+    pub fn enable_notifications(&mut self, cx: &mut Context<Self>) {
+        if let Some(service) = &mut self.notifications {
+            service.send(serde_json::json!({"type":"authorize"}));
+        } else {
+            self.notification_status = "Native notifications are unavailable on this build.".into();
+            cx.notify();
+        }
+    }
+    fn notification_event(&mut self, event: serde_json::Value, cx: &mut Context<Self>) {
+        match event["type"].as_str() {
+            Some("permission") => {
+                self.pane_sizes.notifications_enabled = event["granted"].as_bool().unwrap_or(false);
+                self.notification_status = event["message"].as_str().unwrap_or("").into();
+                self.save_pane_sizes(cx);
+            }
+            Some("error") => {
+                self.notification_status = event["message"]
+                    .as_str()
+                    .unwrap_or("Notification failed")
+                    .into();
+            }
+            Some("open") => {
+                let r = &event["route"];
+                if r["user_id"].as_str() == self.snapshot.user_id.as_deref()
+                    && let (Some(w), Some(ch), Some(m)) = (
+                        r["workspace_id"].as_str(),
+                        r["channel_id"].as_str(),
+                        r["message_id"].as_str(),
+                    )
+                {
+                    self.modal = Modal::None;
+                    self.command(
+                        Command::OpenMessage {
+                            workspace_id: w.into(),
+                            channel_id: ch.into(),
+                            message_id: m.into(),
+                        },
+                        cx,
+                    );
+                }
+            }
+            _ => {}
+        }
         cx.notify();
     }
     pub fn command(&mut self, command: Command, cx: &mut Context<Self>) -> bool {
@@ -307,7 +429,10 @@ impl Messenger {
     }
     pub fn open_modal(&mut self, modal: Modal, window: &mut Window, cx: &mut Context<Self>) {
         self.modal = modal.clone();
-        if matches!(modal, Modal::Manage | Modal::Pins | Modal::Profile(_)) {
+        if matches!(
+            modal,
+            Modal::Manage | Modal::Pins | Modal::Unread | Modal::Profile(_)
+        ) {
             if modal == Modal::Manage
                 && let Some(w) = self
                     .snapshot
@@ -758,6 +883,17 @@ impl Focusable for Messenger {
 }
 impl Render for Messenger {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let activity = (
+            window.is_window_active(),
+            self.modal == Modal::None && self.snapshot.channel.is_some(),
+        );
+        if activity != self.last_activity {
+            self.last_activity = activity;
+            let _ = self.engine.send(Command::SetActivity {
+                active: activity.0,
+                reading: activity.1,
+            });
+        }
         let authenticated = self.snapshot.user_id.is_some();
         let colors = ui::palette(cx);
         div()
@@ -776,7 +912,10 @@ impl Render for Messenger {
             .child(if authenticated && self.modal == Modal::Settings {
                 ui::settings::render(self, window, cx).into_any_element()
             } else if authenticated
-                && matches!(self.modal, Modal::Manage | Modal::Pins | Modal::Profile(_))
+                && matches!(
+                    self.modal,
+                    Modal::Manage | Modal::Pins | Modal::Unread | Modal::Profile(_)
+                )
             {
                 ui::management::render(self, window, cx).into_any_element()
             } else if authenticated {
@@ -788,7 +927,11 @@ impl Render for Messenger {
                 self.modal != Modal::None
                     && !matches!(
                         self.modal,
-                        Modal::Settings | Modal::Manage | Modal::Pins | Modal::Profile(_)
+                        Modal::Settings
+                            | Modal::Manage
+                            | Modal::Pins
+                            | Modal::Unread
+                            | Modal::Profile(_)
                     ),
                 |view| view.child(ui::search::overlay(self, window, cx)),
             )

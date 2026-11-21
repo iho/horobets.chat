@@ -32,18 +32,32 @@ public final class MessengerAppAppDelegate : Sendable {
 
     public func onLaunch() {
         logger.debug("onLaunch")
+        #if !SKIP && os(iOS)
+        Task { @MainActor in NativeNotifications.shared.install() }
+        #endif
     }
 
     public func onResume() {
         logger.debug("onResume")
+        Task { @MainActor in CoreAdapter.shared.setActive(true) }
     }
 
     public func onPause() {
         logger.debug("onPause")
+        Task { @MainActor in CoreAdapter.shared.setActive(false) }
     }
 
     public func onStop() {
         logger.debug("onStop")
+    }
+
+    public func onNotificationRegistrationError(_ message: String) {
+        Task { @MainActor in CoreAdapter.shared.notificationStatus = "Push registration failed: " + message }
+    }
+    public func onNotificationToken(_ data: Data) {
+        #if !SKIP && os(iOS)
+        Task { @MainActor in NativeNotifications.shared.registered(data) }
+        #endif
     }
 
     public func onDestroy() {

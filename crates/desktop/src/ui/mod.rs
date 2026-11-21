@@ -10,11 +10,12 @@ pub mod search;
 pub mod settings;
 pub mod sidebar;
 pub mod thread;
+pub mod unread;
 use crate::state::{Messenger, Modal};
 use client_core::Command;
 use gpui::*;
 use gpui_component::{
-    Disableable,
+    Disableable, Sizable,
     button::{Button, ButtonVariants},
     input::Input,
     resizable::{ResizableState, h_resizable, resizable_panel},
@@ -36,6 +37,12 @@ pub struct Palette {
     pub avatar: u32,
     pub overlay: u32,
 }
+/// Conversation geometry uses a 4 px base across the message and composer rails.
+pub const CHAT_GUTTER: f32 = 16.;
+pub const CHAT_HEADER_HEIGHT: f32 = 56.;
+pub const CHAT_AVATAR: f32 = 32.;
+pub const CHAT_GAP: f32 = 8.;
+
 pub fn palette(cx: &App) -> Palette {
     if gpui_component::Theme::global(cx).is_dark() {
         Palette {
@@ -157,9 +164,9 @@ pub fn shell(
         }
     });
     let header = div()
-        .h(px(68.))
+        .h(px(CHAT_HEADER_HEIGHT))
         .flex_shrink_0()
-        .px_6()
+        .px(px(CHAT_GUTTER))
         .border_b_1()
         .border_color(rgb(colors.border))
         .flex()
@@ -175,6 +182,7 @@ pub fn shell(
                 .child(
                     div()
                         .text_lg()
+                        .truncate()
                         .font_weight(FontWeight::SEMIBOLD)
                         .child(heading),
                 )
@@ -231,7 +239,7 @@ pub fn shell(
             |view| {
                 view.child(
                     div()
-                        .px_6()
+                        .px(px(CHAT_GUTTER))
                         .py_2()
                         .bg(rgb(colors.error_bg))
                         .text_color(rgb(colors.error_text))
@@ -253,7 +261,7 @@ pub fn shell(
         .when(this.snapshot.notice.is_some(), |view| {
             view.child(
                 div()
-                    .px_6()
+                    .px(px(CHAT_GUTTER))
                     .py_2()
                     .bg(rgb(colors.notice))
                     .child(muted(this.snapshot.notice.clone().unwrap_or_default())),

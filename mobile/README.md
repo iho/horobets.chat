@@ -94,7 +94,7 @@ The mobile UI now consumes the full Rust snapshot, including cached media and ma
 
 Native Android document pickers copy content URIs into the app's private cache before handing a real path to Rust. Downloads use Android's Save dialog. iOS uses the photo/document pickers and native save/share interface. No broad storage permission is requested. Mobile uses touch menus and navigation rather than desktop pane resizing and keyboard shortcuts. Markdown formatting controls insert editable snippets; typing suggestions operate on the current trailing @/# token. Android also exposes **Copy message** because Skip's text-selection modifier is not available in the pinned release.
 
-Push delivery, presence, and WYSIWYG editing are not implemented by either client. APNs/FCM credentials and store signing/distribution are not configured.
+The unread inbox, native notifications and APNs/FCM delivery integrations are implemented. Mobile background push needs deployment credentials and matching platform configuration; see [notification setup](../docs/notifications.md). Presence and WYSIWYG editing remain unimplemented. Store signing/distribution is not configured.
 
 ## Data and lifecycle
 
@@ -113,3 +113,7 @@ swift test --package-path mobile
 Rust bridge tests exercise callbacks, invalid commands, duplicate listener rejection, shutdown, live registration/workspace creation/message/reply exchange, authenticated avatar/attachment upload, cached image previews, byte-for-byte original downloads, and offline history/search restoration. Swift tests load the real Rust library and check media decoding, mention completion/link parsing, Markdown structure, empty image paths, and role permissions. Building with Skip transpiles the shared source; the Gradle APK build also checks the resulting Kotlin.
 
 Android emulator checks against an isolated live backend cover sign-in, cached images and avatars, opening/closing the image viewer, profile navigation, mention completion, pinning and the pins page, native photo-library and document import, image-only sending, and saving an original through the native document picker with matching file bytes. Private-channel membership and moderator actions were also exercised, with the changes confirmed in the isolated server database. Profile form checks edit the name and handle, rotate the screen before saving, verify database persistence, reopen settings, reject a taken handle without losing the draft, retry successfully, and confirm saved values after app restart. iOS has been simulator-build validated; physical-device signing and an iOS interactive run are still outstanding.
+
+## Conversation layout
+
+Chat shares a 4-point spacing rhythm with desktop: 12-point phone gutters, a 32-point avatar rail, an 8-point column gap, and compact author/date separation. Native toolbar actions share the title bar; topic and membership information occupy a single metadata line. The composer combines a growing message field, attachment/format menu, and Send in one row. Controls retain 48-point targets. Inline media is capped at 192 points, with the existing viewer and original download available.

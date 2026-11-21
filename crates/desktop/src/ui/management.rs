@@ -22,16 +22,18 @@ pub fn render(
     let title = match this.modal {
         Modal::Manage => "Workspace & moderation",
         Modal::Pins => "Pinned messages",
+        Modal::Unread => "Unread messages",
         _ => "User profile",
     };
     let body = match this.modal.clone() {
         Modal::Manage => workspace(this, cx).into_any_element(),
+        Modal::Unread => super::unread::render(this, cx).into_any_element(),
         Modal::Pins => pins(this, window, cx).into_any_element(),
         Modal::Profile(id) => profile(this, &id, cx).into_any_element(),
         _ => div().into_any_element(),
     };
     let header = div()
-        .h(px(68.))
+        .h(px(CHAT_HEADER_HEIGHT))
         .flex_shrink_0()
         .px_6()
         .flex()

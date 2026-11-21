@@ -61,7 +61,15 @@ struct CachedMessage: Decodable, Identifiable {
     var reactions: [Reaction]
     var id: String { message.id }
 }
+struct MessageNotification: Decodable {
+    var workspaceId: String
+    var message: Message
+    var author: String
+}
 struct MobileSnapshot: Decodable {
+    var unreadMessages: [Message]?
+    var openedMessage: String?
+    var notifications: [MessageNotification]?
     var server = ""
     var userId: String?
     var workspaces: [Workspace] = []
@@ -121,6 +129,7 @@ struct ModerationAction: Decodable, Identifiable {
     var id: Int64 { seq }
 }
 enum MobilePanel: String, Identifiable {
+    case unread
     case settings, people, workspace, pins, profile, thread, members, channel
     var id: String { rawValue }
 }

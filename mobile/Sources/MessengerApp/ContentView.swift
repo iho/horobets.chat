@@ -9,11 +9,13 @@ struct ContentView: View {
             if core.snapshot.userId == nil { SignInView(core: core) }
             else { ChannelListView(core: core) }
         }
-        .tint(.teal).preferredColorScheme(darkMode ? .dark : .light)
+        .tint(darkMode ? Color.teal : Color(red: 0.07, green: 0.42, blue: 0.36)).preferredColorScheme(darkMode ? .dark : .light)
         .sheet(item: $core.panel, onDismiss: { if core.panel == nil { core.command("select_thread", payload: NSNull()) } }) { panel in PanelView(core: core, panel: panel) }
         .modifier(FileImportModifier(core: core, active: core.panel == nil))
         .modifier(MediaPresentation(core: core, active: core.panel == nil))
         .environment(\.openURL, OpenURLAction { url in core.openReference(url) ? .handled : .systemAction })
+        .onChange(of: core.navigation) { _, _ in core.updateActivity() }
+        .onChange(of: core.panel) { _, _ in core.updateActivity() }
         .onChange(of: core.snapshot.userId) { _, value in if value == nil { core.panel = nil; core.navigation = [] } }
     }
 }

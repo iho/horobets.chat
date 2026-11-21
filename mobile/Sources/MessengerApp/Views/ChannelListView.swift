@@ -25,6 +25,15 @@ struct ChannelListView: View {
                         ForEach(core.snapshot.workspaces) { workspace in Text(workspace.name).tag(workspace.id) }
                     }
                 }
+                Section {
+                    Button { core.panel = .unread } label: {
+                        HStack {
+                            Label("Unread messages", systemImage: "envelope")
+                            Spacer()
+                            Text("\(core.snapshot.unread.values.reduce(Int64(0), +))").font(.caption.bold())
+                        }
+                    }
+                }
                 Section("Channels") {
                     ForEach(core.snapshot.channels.filter { !$0.isDirect && !$0.isSaved }) { channel in channelRow(channel) }
                     Button("+ New channel") { name = ""; isPrivate = false; newChannel = true }.disabled(core.snapshot.workspace == nil)

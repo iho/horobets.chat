@@ -115,4 +115,8 @@ S3 configuration uses the [object_store AWS environment configuration](https://d
 
 ## Scope
 
-This implements the backend, shared protocol, offline client engine, GPUI desktop client, and initial Skip iOS/Android client with UniFFI bindings. Magic links, push delivery, presence tracking, session revocation, and upload garbage collection are not implemented. The current manager retains opened workspaces until shutdown; idle eviction is a future scaling improvement. FTS latency and message throughput have not been benchmarked. Use one server process per data directory; actor serialization is in-process.
+This implements the backend, shared protocol, offline client engine, GPUI desktop client, and initial Skip iOS/Android client with UniFFI bindings. Magic links, presence tracking, session revocation, and upload garbage collection are not implemented. Native notification delivery and the unread inbox are implemented; mobile background delivery requires operator-configured APNs/FCM credentials. The current manager retains opened workspaces until shutdown; idle eviction is a future scaling improvement. FTS latency and message throughput have not been benchmarked. Use one server process per data directory; actor serialization is in-process.
+
+## Notifications and unread inbox
+
+Desktop and mobile provide **Unread messages**, cross-device read marks, focus-aware alerts, and notification routing across joined workspaces. Enable notifications in client Settings. For the macOS app bundle, Android Firebase setup, iOS provisioning and server APNs/FCM credentials, see [notification setup](docs/notifications.md).

@@ -17,7 +17,7 @@ pub fn render(
         .bg(rgb(colors.bg))
         .child(
             div()
-                .h(px(68.))
+                .h(px(CHAT_HEADER_HEIGHT))
                 .flex_shrink_0()
                 .px_5()
                 .flex()

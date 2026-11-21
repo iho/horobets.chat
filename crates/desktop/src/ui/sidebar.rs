@@ -13,7 +13,7 @@ pub fn render(this: &mut Messenger, cx: &mut Context<Messenger>) -> impl IntoEle
         .border_color(rgb(colors.border))
         .child(
             div()
-                .h(px(68.))
+                .h(px(CHAT_HEADER_HEIGHT))
                 .px_5()
                 .flex()
                 .items_center()
@@ -284,6 +284,16 @@ pub fn render(this: &mut Messenger, cx: &mut Context<Messenger>) -> impl IntoEle
                         .flex()
                         .flex_wrap()
                         .gap_2()
+                        .child(
+                            secondary_button("unread-open")
+                                .label(format!(
+                                    "Unread messages · {}",
+                                    this.snapshot.unread.values().sum::<i64>()
+                                ))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_modal(Modal::Unread, window, cx)
+                                })),
+                        )
                         .child(
                             secondary_button("settings-open")
                                 .label("Settings")

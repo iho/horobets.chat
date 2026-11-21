@@ -9,7 +9,23 @@ import AppKit
 #endif
 #endif
 
+/// A shared 4-point rhythm; compact visuals keep native-sized hit areas.
+enum ChatLayout {
+    static let gutter: CGFloat = 12
+    static let gap: CGFloat = 8
+    static let avatar: CGFloat = 32
+    static let target: CGFloat = 48
+}
+
 extension View {
+    @ViewBuilder func composerTextInsets() -> some View {
+        #if SKIP
+        self.textFieldContentPadding(EdgeInsets(top: 12, leading: 0, bottom: 12, trailing: 0))
+        #else
+        self.padding(.vertical, 12)
+        #endif
+    }
+
     @ViewBuilder func selectableText() -> some View {
         #if SKIP
         self
@@ -62,7 +78,7 @@ struct AttachmentView: View {
         VStack(alignment: .leading, spacing: 8) {
             if let path = core.snapshot.imagePreviews[attachment.id] {
                 Button { core.previewPath = path } label: {
-                    CachedImage(path: path).frame(maxWidth: .infinity, maxHeight: 240).clipShape(RoundedRectangle(cornerRadius: 12))
+                    CachedImage(path: path).frame(maxWidth: .infinity, maxHeight: 192).clipShape(RoundedRectangle(cornerRadius: 12))
                 }.buttonStyle(.plain).accessibilityLabel("Open image: " + attachment.filename)
             } else if attachment.isImage {
                 HStack { Text("Image preview unavailable").font(.caption); Button("Reload") { core.command("refresh") } }
@@ -148,7 +164,7 @@ struct MarkdownBody: View {
     @ObservedObject var core: CoreAdapter
     let text: String
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 6) {
             ForEach(MessageText.blocks(text)) { block in
                 if block.kind.hasPrefix("code:") {
                     VStack(alignment: .leading, spacing: 4) {

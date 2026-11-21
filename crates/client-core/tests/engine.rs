@@ -652,3 +652,172 @@ async fn management_pins_profiles_and_saved_messages_sync_and_survive_offline() 
     );
     drop(offline);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unread_and_alerts_follow_visibility_and_read_marks_sync_across_devices() {
+    let temp = tempfile::tempdir().unwrap();
+    let app = messenger_server::App::open(
+        temp.path().join("server"),
+        "a-secret-with-at-least-thirty-two-bytes",
+    )
+    .unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let server = format!("http://{}", listener.local_addr().unwrap());
+    let task = tokio::spawn(async move {
+        axum::serve(listener, messenger_server::api::router(app))
+            .await
+            .unwrap()
+    });
+    let alice = ClientEngine::start(temp.path().join("alice")).unwrap();
+    let bob = ClientEngine::start(temp.path().join("bob")).unwrap();
+    auth(&alice, &server, "alice@example.com");
+    auth(&bob, &server, "bob@example.com");
+    wait(&alice, |s| s.user_id.is_some() && !s.busy).await;
+    wait(&bob, |s| s.user_id.is_some() && !s.busy).await;
+    alice
+        .send(Command::CreateWorkspace {
+            name: "Unread QA".into(),
+            slug: "unread-qa".into(),
+        })
+        .unwrap();
+    wait(&alice, |s| s.workspace.is_some()).await;
+    alice
+        .send(Command::Invite("bob@example.com".into()))
+        .unwrap();
+    wait(&alice, |s| s.people.len() == 2).await;
+    alice
+        .send(Command::CreateChannel("general".into()))
+        .unwrap();
+    wait(&alice, |s| s.connected && s.channel.is_some()).await;
+    bob.send(Command::Refresh).unwrap();
+    wait(&bob, |s| s.connected && s.channel.is_some()).await;
+    send(&alice, "Notify while backgrounded", None);
+    let unread = wait(&bob, |s| {
+        s.unread_messages
+            .iter()
+            .any(|m| m.body_md == "Notify while backgrounded")
+            && !s.notifications.is_empty()
+    })
+    .await;
+    let id = unread.unread_messages[0].id.clone();
+    assert_eq!(
+        unread
+            .notifications
+            .iter()
+            .filter(|n| n.message.id == id)
+            .count(),
+        1
+    );
+    bob.send(Command::Refresh).unwrap();
+    wait(&bob, |s| !s.busy && s.connected && !s.unread.is_empty()).await;
+    bob.send(Command::SetActivity {
+        active: true,
+        reading: true,
+    })
+    .unwrap();
+    wait(&bob, |s| s.unread.is_empty()).await;
+    let other = ClientEngine::start(temp.path().join("bob-other")).unwrap();
+    other
+        .send(Command::Authenticate {
+            server: server.clone(),
+            email: "bob@example.com".into(),
+            password: "correct horse battery staple".into(),
+            register: false,
+        })
+        .unwrap();
+    wait(&other, |s| {
+        s.connected && s.channel.is_some() && s.unread.is_empty()
+    })
+    .await;
+    send(&alice, "Reading this conversation", None);
+    let state = wait(&bob, |s| {
+        s.messages
+            .iter()
+            .any(|m| m.message.body_md == "Reading this conversation")
+            && s.unread.is_empty()
+    })
+    .await;
+    assert!(
+        !state
+            .notifications
+            .iter()
+            .any(|n| n.message.body_md == "Reading this conversation")
+    );
+    bob.send(Command::SetActivity {
+        active: false,
+        reading: false,
+    })
+    .unwrap();
+    wait(&bob, |s| {
+        s.messages
+            .iter()
+            .any(|m| m.message.body_md == "Reading this conversation")
+    })
+    .await;
+    send(&alice, "Back in the inbox", None);
+    wait(&bob, |s| {
+        s.unread_messages
+            .iter()
+            .any(|m| m.body_md == "Back in the inbox")
+    })
+    .await;
+    bob.send(Command::MarkAllRead).unwrap();
+    wait(&bob, |s| s.unread.is_empty()).await;
+    wait(&other, |s| {
+        s.unread.is_empty()
+            && s.messages
+                .iter()
+                .any(|m| m.message.body_md == "Back in the inbox")
+    })
+    .await;
+    // Alerts also arrive for another joined workspace, without switching the UI.
+    let first_workspace = unread.workspace.clone().unwrap();
+    alice
+        .send(Command::CreateWorkspace {
+            name: "Another workspace".into(),
+            slug: "another-workspace".into(),
+        })
+        .unwrap();
+    wait(&alice, |s| {
+        s.workspace.as_ref() != Some(&first_workspace) && s.workspace.is_some()
+    })
+    .await;
+    alice
+        .send(Command::Invite("bob@example.com".into()))
+        .unwrap();
+    wait(&alice, |s| s.people.len() == 2).await;
+    alice
+        .send(Command::CreateChannel("other-channel".into()))
+        .unwrap();
+    let target = wait(&alice, |s| s.connected && s.channel.is_some()).await;
+    send(&alice, "Alert from another workspace", None);
+    let alert = wait(&bob, |s| {
+        s.notifications
+            .iter()
+            .any(|n| n.message.body_md == "Alert from another workspace")
+    })
+    .await;
+    assert_eq!(alert.workspace.as_ref(), Some(&first_workspace));
+    let notification = alert
+        .notifications
+        .iter()
+        .find(|n| n.message.body_md == "Alert from another workspace")
+        .unwrap();
+    bob.send(Command::OpenMessage {
+        workspace_id: notification.workspace_id.clone(),
+        channel_id: notification.message.channel_id.clone(),
+        message_id: notification.message.id.clone(),
+    })
+    .unwrap();
+    wait(&bob, |s| {
+        s.workspace == target.workspace
+            && s.thread_messages
+                .iter()
+                .any(|m| m.message.body_md == "Alert from another workspace")
+    })
+    .await;
+    drop(other);
+    drop(bob);
+    drop(alice);
+    task.abort();
+}

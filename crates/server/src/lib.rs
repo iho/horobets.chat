@@ -2,6 +2,7 @@ pub mod api;
 pub mod auth;
 pub mod db;
 pub mod media;
+pub mod push;
 pub mod storage;
 pub mod ws;
 use axum::{
@@ -63,6 +64,7 @@ pub fn id() -> String {
 pub struct App {
     pub db: Arc<db::manager::Manager>,
     pub auth: auth::Auth,
+    pub push: Arc<push::Push>,
     pub blobs: Arc<dyn storage::BlobStore>,
 }
 impl App {
@@ -75,6 +77,7 @@ impl App {
         Ok(Self {
             db: Arc::new(db::manager::Manager::open(&data)?),
             auth: auth::Auth::new(secret),
+            push: Arc::new(push::Push::from_env()?),
             blobs: Arc::new(storage::LocalFsStore::new(data.join("blobs"))?),
         })
     }

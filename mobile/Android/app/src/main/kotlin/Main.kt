@@ -57,6 +57,7 @@ open class MainActivity: AppCompatActivity {
         super.onCreate(savedInstanceState)
         logger.info("starting activity")
         MobileFiles.install(this)
+        MobileNotifications.install(this)
         UIApplication.launch(this)
         enableEdgeToEdge()
 
@@ -80,6 +81,12 @@ open class MainActivity: AppCompatActivity {
         //)
         //let requestTag = 1
         //ActivityCompat.requestPermissions(self, permissions.toTypedArray(), requestTag)
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        MobileNotifications.openIntent(intent)
     }
 
     override fun onStart() {

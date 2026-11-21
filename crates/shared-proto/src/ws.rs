@@ -42,6 +42,11 @@ pub enum ClientEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "payload", rename_all = "snake_case")]
 pub enum ServerEvent {
+    Notification {
+        workspace_id: String,
+        message: MessageDto,
+        author: String,
+    },
     PinUpdated {
         channel_id: String,
         message_id: String,
@@ -157,6 +162,11 @@ mod tests {
             );
         }
         let events = vec![
+            ServerEvent::Notification {
+                workspace_id: s.clone(),
+                message: m.clone(),
+                author: s.clone(),
+            },
             ServerEvent::PinUpdated {
                 channel_id: s.clone(),
                 message_id: s.clone(),

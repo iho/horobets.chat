@@ -31,6 +31,11 @@ struct SettingsView: View {
                 else if core.profileEditor.saved && !core.profileEditor.hasChanges { Text("Profile saved").font(.caption).foregroundStyle(.teal) }
                 Button("Save profile") { core.saveProfile() }.disabled(!core.profileEditor.canSave || core.snapshot.busy)
             }
+            Section("Notifications") {
+                Text(core.notificationStatus).font(.caption).foregroundStyle(.secondary)
+                Button(core.notificationsEnabled ? "Check notification permission" : "Enable notifications") { core.enableNotifications() }
+                if core.notificationsEnabled { Button("Turn off notifications") { core.disableNotifications() } }
+            }
             Section("Appearance") { Toggle("Dark mode", isOn: $darkMode) }
             Section("Server") {
                 Text(core.snapshot.server).font(.caption).selectableText()
@@ -40,7 +45,7 @@ struct SettingsView: View {
         }.navigationTitle("Settings").compactTitle()
         .alert("Sign out?", isPresented: $signOut) {
             Button("Cancel", role: .cancel) {}
-            Button("Sign out", role: .destructive) { core.drafts = [:]; core.panel = nil; core.navigation = []; core.command("logout") }
+            Button("Sign out", role: .destructive) { core.disableNotifications(); core.drafts = [:]; core.panel = nil; core.navigation = []; core.command("logout") }
         } message: { Text("The saved session is removed. Offline history stays on this device.") }
     }
 }

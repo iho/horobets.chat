@@ -1,3 +1,4 @@
+mod notifications;
 mod state;
 mod ui;
 use gpui::*;

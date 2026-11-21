@@ -93,6 +93,10 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 Client tests cover atomic optimistic reconciliation, FTS changes/deletions, workspace isolation, a two-user live conversation with threads/reactions, and an offline outbox surviving an app restart before reconnecting exactly once. Additional tests cover handle uniqueness and validation, opposite DM requests racing to one conversation, fixed two-person DM membership, private-history recovery after invitation, cache/search removal after revocation, concurrent writers, file access, and message ownership.
 
-Notification delivery, presence indicators, and rich-text WYSIWYG editing depend on further product/backend work. The connection pill reports transport state, not user presence. The Skip mobile client uses the same engine through the UniFFI bridge; see [mobile setup](../../mobile/README.md). No 120 FPS or search-latency benchmark is claimed.
+macOS native notifications, the unread inbox and cross-workspace live alert routing are available; see [notification setup](../../docs/notifications.md) for the app bundle and permission flow. Presence indicators and rich-text WYSIWYG editing depend on further product/backend work. The connection pill reports transport state, not user presence. The Skip mobile client uses the same engine through the UniFFI bridge; see [mobile setup](../../mobile/README.md). No 120 FPS or search-latency benchmark is claimed.
 
 The pinned GPUI Component dependency is vendored with a small text-link routing hook so internal links open in this window while external links keep opening in the browser. See `vendor/gpui-component/PATCHES.md`.
+
+## Conversation layout
+
+Chat uses a 4 px spacing base: 16 px outer gutters, a 32 px avatar rail, an 8 px column gap, and aligned 56 px headers. New authors have 8 px separation; grouped messages use 2 px. Message actions float on hover instead of reserving an empty row, while reply counts remain visible. The composer starts at one line, grows with the draft, and exposes Format and Topic controls on demand; its footer wraps in narrow thread panes.

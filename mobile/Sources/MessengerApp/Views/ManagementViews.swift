@@ -8,6 +8,7 @@ struct PanelView: View {
             VStack(spacing: 0) {
                 ErrorBanner(core: core)
                 switch panel {
+                case .unread: UnreadMessagesView(core: core)
                 case .settings: SettingsView(core: core)
                 case .people: PeopleView(core: core)
                 case .workspace: WorkspaceView(core: core)

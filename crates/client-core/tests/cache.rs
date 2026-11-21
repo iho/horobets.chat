@@ -148,3 +148,97 @@ fn long_threads_do_not_displace_roots_or_drop_thread_reactions() {
     assert_eq!(thread[0].message.id, "m0");
     assert_eq!(thread[249].reactions[0].count, 1);
 }
+
+#[test]
+fn unread_receipts_are_monotonic_private_and_survive_offline_restart() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("reads.db");
+    let mut cache = Cache::open(&path).unwrap();
+    cache.set_metadata("user_id", &"bob").unwrap();
+    let channel = shared_proto::Channel {
+        id: "general".into(),
+        name: "general".into(),
+        topic: None,
+        is_private: false,
+        is_direct: false,
+        is_saved: false,
+        peer_user_id: None,
+        created_by: "alice".into(),
+        created_at: 0,
+    };
+    cache.set_channels("w", &[channel]).unwrap();
+    let m = MessageDto {
+        seq: 5,
+        id: "m".into(),
+        channel_id: "general".into(),
+        user_id: "alice".into(),
+        parent_id: None,
+        topic_tag: None,
+        body_md: "Unread".into(),
+        created_at: 1,
+        edited_at: None,
+        deleted_at: None,
+    };
+    cache
+        .apply_page(
+            "w",
+            &[ServerEvent::MessageCreated {
+                client_msg_id: None,
+                message: m.clone(),
+            }],
+            5,
+        )
+        .unwrap();
+    cache
+        .apply_page(
+            "w",
+            &[ServerEvent::ReadStateUpdated {
+                channel_id: "general".into(),
+                user_id: "alice".into(),
+                last_read_seq: 5,
+            }],
+            6,
+        )
+        .unwrap();
+    assert_eq!(cache.unread_messages("w", "bob").unwrap(), vec![m.clone()]);
+    assert!(cache.claim_notification("w", &m).unwrap());
+    assert!(!cache.claim_notification("w", &m).unwrap());
+    cache.mark_read("w", "general").unwrap();
+    assert!(cache.unread_messages("w", "bob").unwrap().is_empty());
+    drop(cache);
+    let mut cache = Cache::open(&path).unwrap();
+    assert_eq!(
+        cache.pending_reads("w").unwrap(),
+        vec![("general".into(), 5)]
+    );
+    assert!(!cache.claim_notification("w", &m).unwrap());
+    cache
+        .apply_page(
+            "w",
+            &[ServerEvent::ReadStateUpdated {
+                channel_id: "general".into(),
+                user_id: "bob".into(),
+                last_read_seq: 3,
+            }],
+            7,
+        )
+        .unwrap();
+    assert!(cache.unread_messages("w", "bob").unwrap().is_empty());
+    assert!(!cache.pending_reads("w").unwrap().is_empty());
+    cache
+        .apply_page(
+            "w",
+            &[ServerEvent::ReadStateUpdated {
+                channel_id: "general".into(),
+                user_id: "bob".into(),
+                last_read_seq: 5,
+            }],
+            8,
+        )
+        .unwrap();
+    assert!(cache.pending_reads("w").unwrap().is_empty());
+    cache.mark_read("w", "general").unwrap();
+    cache.set_channels("w", &[]).unwrap();
+    assert!(cache.pending_reads("w").unwrap().is_empty());
+    assert!(cache.unread_messages("w", "bob").unwrap().is_empty());
+}

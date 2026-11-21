@@ -4,6 +4,7 @@ import SwiftUI
 import chat.horobets.core.MobileClient
 import chat.horobets.core.SnapshotListener
 import messenger.app.MobileFiles
+import messenger.app.MobileNotifications
 #else
 import MessengerCore
 #if os(iOS)
@@ -29,6 +30,20 @@ final class CoreAdapter: ObservableObject {
     static let shared = CoreAdapter()
 
     @Published var snapshot = MobileSnapshot()
+    @Published var notificationsEnabled = false
+    @Published var notificationStatus = "Notifications are off"
+    @Published var appActive = false
+    private var notified: Set<String> = []
+    private var pendingPushToken: [String]?
+    private var registeredPushKey: String?
+    private var pendingNotification: [String: String]?
+    private var lastActivity = ""
+    private var deviceId: String {
+        if let saved = UserDefaults.standard.string(forKey: "notificationDeviceId") { return saved }
+        let value = UUID().uuidString
+        UserDefaults.standard.set(value, forKey: "notificationDeviceId")
+        return value
+    }
     @Published var localError: String?
     @Published var profileEditor = ProfileEditor()
     @Published var navigation: [String] = []
@@ -62,6 +77,12 @@ final class CoreAdapter: ObservableObject {
             self.client = client
             self.listener = listener
             try client.subscribe(listener: listener)
+            notificationsEnabled = UserDefaults.standard.bool(forKey: "notificationsEnabled")
+            notificationStatus = notificationsEnabled ? UserDefaults.standard.string(forKey: "notificationStatus") ?? "Live notifications enabled; background push requires platform and server setup." : "Notifications are off"
+            #if SKIP
+            MobileNotifications.configure(dataDirectory: directory.path, deviceId: deviceId)
+            #endif
+            configureNotifications()
         } catch { localError = error.localizedDescription }
     }
 
@@ -71,13 +92,33 @@ final class CoreAdapter: ObservableObject {
             decoder.keyDecodingStrategy = .convertFromSnakeCase
             let value = try decoder.decode(MobileSnapshot.self, from: Data(json.utf8))
             let previousWorkspace = snapshot.workspace
+            let previousUser = snapshot.userId
             snapshot = value
+            if previousUser != value.userId { notified = []; registeredPushKey = nil }
+            #if SKIP
+            MobileNotifications.account(user: value.userId ?? "")
+            #endif
+            if previousUser != value.userId {
+                registerPush()
+                if let route = pendingNotification, let data = try? JSONSerialization.data(withJSONObject: route), let raw = String(data: data, encoding: .utf8) { openNotification(raw) }
+            }
+            if notificationsEnabled, let notice = value.notice, notice.hasPrefix("Push") { notificationStatus = notice }
+            deliverNotifications()
+            if notificationsEnabled, let workspace = value.workspace {
+                let unread = value.unread.keys.filter { (value.unread[$0] ?? Int64(0)) > Int64(0) }
+                #if SKIP
+                if let data = try? JSONSerialization.data(withJSONObject: unread), let channels = String(data: data, encoding: .utf8) { MobileNotifications.clearRead(workspace: workspace, unreadChannels: channels) }
+                #elseif os(iOS)
+                NativeNotifications.shared.clearRead(workspace: workspace, unreadChannels: Set(unread))
+                #endif
+            }
+
             profileEditor.receive(value.me, error: value.error)
             if previousWorkspace != value.workspace || navigation.last.map({ id in !value.channels.contains(where: { $0.id == id }) }) == true {
                 navigation = []; panel = nil; profileId = nil; previewPath = nil; exportedPath = nil
             }
             if uploading && (value.error != nil || (avatarUpload ? value.me?.avatarUrl != oldAvatar : value.attachments.count > initialAttachmentCount)) { uploading = false }
-            if value.error != nil { downloading = false; pendingDirect = nil }
+            if value.error != nil { downloading = false; pendingDirect = nil; pendingNotification = nil }
             if let path = downloadPath, FileManager.default.fileExists(atPath: path) {
                 downloadPath = nil; downloading = false
                 #if SKIP
@@ -90,6 +131,13 @@ final class CoreAdapter: ObservableObject {
                 exportedPath = path
                 #endif
             }
+            if let route = pendingNotification, let user = value.userId {
+                if route["user_id"] != user { pendingNotification = nil }
+                else if let channel = route["channel_id"], value.workspace == route["workspace_id"], value.channel == channel, value.openedMessage == route["message_id"], let thread = value.thread {
+                    pendingNotification = nil; navigation = [channel]; openingThread = thread; panel = .thread
+                }
+            }
+            updateActivity()
             if let target = pendingDirect {
                 let match = value.channels.first { channel in
                     target == value.userId ? channel.isSaved : channel.isDirect && channel.peerUserId == target
@@ -97,6 +145,115 @@ final class CoreAdapter: ObservableObject {
                 if let match { pendingDirect = nil; openChannel(match.id) }
             }
         } catch { localError = "Cannot read client update: \(error.localizedDescription)" }
+    }
+
+    private func configureNotifications() {
+        #if SKIP
+        MobileNotifications.callbacks(token: { [weak self] token, environment in
+            Task { @MainActor [weak self] in self?.pushToken(token, environment: environment) }
+        }, open: { [weak self] route in
+            Task { @MainActor [weak self] in self?.openNotification(route) }
+        }, status: { [weak self] status in
+            Task { @MainActor [weak self] in self?.notificationStatus = status }
+        })
+        #elseif os(iOS)
+        NativeNotifications.shared.callbacks(token: { [weak self] token, environment in self?.pushToken(token, environment: environment) }, open: { [weak self] route in self?.openNotification(route) })
+        NativeNotifications.shared.refresh()
+        #endif
+    }
+    func setActive(_ value: Bool) {
+        appActive = value; updateActivity()
+        if value && notificationsEnabled {
+            #if SKIP
+            MobileNotifications.refresh()
+            #elseif os(iOS)
+            NativeNotifications.shared.refresh()
+            #endif
+        }
+    }
+    func updateActivity() {
+        let reading = appActive && !navigation.isEmpty && (panel == nil || panel == .thread)
+        let key = "\(appActive):\(reading):\(snapshot.channel ?? "")"
+        if key != lastActivity { lastActivity = key; command("set_activity", payload: ["active": appActive, "reading": reading]) }
+        #if SKIP
+        MobileNotifications.reading(isActive: reading, workspace: snapshot.workspace ?? "", channel: reading ? snapshot.channel ?? "" : "")
+        #elseif os(iOS)
+        NativeNotifications.shared.reading(reading, workspace: snapshot.workspace ?? "", channel: reading ? snapshot.channel ?? "" : "")
+        #endif
+    }
+    func enableNotifications() {
+        #if SKIP
+        MobileNotifications.enable { [weak self] enabled, status in
+            Task { @MainActor [weak self] in self?.notificationPermission(enabled, status: status) }
+        }
+        #elseif os(iOS)
+        NativeNotifications.shared.enable { [weak self] enabled, status in self?.notificationPermission(enabled, status: status) }
+        #else
+        notificationStatus = "Notification permissions are available on iOS and Android devices."
+        #endif
+    }
+    private func notificationPermission(_ enabled: Bool, status: String) {
+        notificationsEnabled = enabled; notificationStatus = status
+        UserDefaults.standard.set(enabled, forKey: "notificationsEnabled")
+        UserDefaults.standard.set(status, forKey: "notificationStatus")
+        if enabled { registerPush() }
+    }
+    func disableNotifications() {
+        notificationsEnabled = false; notificationStatus = "Notifications are off"
+        UserDefaults.standard.set(false, forKey: "notificationsEnabled")
+        registeredPushKey = nil
+        #if SKIP
+        MobileNotifications.disable()
+        #elseif os(iOS)
+        NativeNotifications.shared.disable()
+        #endif
+        if snapshot.userId != nil { command("unregister_device", payload: deviceId) }
+    }
+    private func pushToken(_ token: String, environment: String) {
+        pendingPushToken = [token, environment]; registeredPushKey = nil; registerPush()
+    }
+    private func registerPush() {
+        guard notificationsEnabled, let user = snapshot.userId, let info = pendingPushToken else { return }
+        let key = user + info[0]
+        guard key != registeredPushKey else { return }
+        registeredPushKey = key
+        #if SKIP
+        let platform = "android"
+        #else
+        let platform = "ios"
+        #endif
+        command("register_device", payload: ["device_id": deviceId, "platform": platform, "token": info[0], "environment": info[1]])
+    }
+    private func deliverNotifications() {
+        guard let user = snapshot.userId else { return }
+        for notification in snapshot.notifications ?? [] {
+            let message = notification.message
+            let workspace = notification.workspaceId
+            if notified.contains(message.id) { continue }
+            notified.insert(message.id)
+            guard notificationsEnabled else { continue }
+            let info = ["workspace_id": workspace, "channel_id": message.channelId, "message_id": message.id, "user_id": user]
+            guard let data = try? JSONSerialization.data(withJSONObject: info), let route = String(data: data, encoding: .utf8) else { continue }
+            let title = notification.author
+            let body = message.bodyMd.isEmpty ? "Sent an attachment" : String(message.bodyMd.prefix(180))
+            #if SKIP
+            MobileNotifications.show(title: title, body: body, id: message.id, route: route)
+            #elseif os(iOS)
+            if !appActive { continue } // Background delivery belongs to APNs, avoiding duplicate local alerts.
+            NativeNotifications.shared.show(title: title, body: body, id: message.id, route: route)
+            #endif
+        }
+        notified = Set((snapshot.notifications ?? []).map { $0.message.id })
+    }
+    private func openNotification(_ raw: String) {
+        guard let data = raw.data(using: .utf8), let route = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return }
+        if let user = snapshot.userId, route["user_id"] != user { return }
+        pendingNotification = route
+        guard snapshot.userId != nil else { return }
+        panel = nil
+        if let w = route["workspace_id"], let ch = route["channel_id"], let message = route["message_id"] {
+            command("open_message", payload: ["workspace_id": w, "channel_id": ch, "message_id": message])
+        }
     }
 
     @discardableResult

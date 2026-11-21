@@ -43,3 +43,9 @@ mobile/Bridge/Sources/MessengerCore/Generated.swift
 mobile/Sources/MessengerApp/Skip/messenger_mobile.kt
 **/xcuserdata/
 *.xcuserstate
+
+# Push provider credentials and per-deployment Firebase configuration
+*.p8
+/secrets/
+**/google-services.json
+mobile/Android/app/src/main/res/values/firebase.xml

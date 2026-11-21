@@ -19,6 +19,7 @@ pub fn overlay(
         Modal::Reaction(_) => "Add a reaction",
         Modal::Manage => "Workspace & moderation",
         Modal::Pins => "Pinned messages",
+        Modal::Unread => "Unread messages",
         Modal::Profile(_) => "Profile",
         Modal::ChannelEdit(_) => "Edit channel",
         Modal::ConfirmDelete(_) => "Delete message?",

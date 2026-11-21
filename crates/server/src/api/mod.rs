@@ -17,7 +17,16 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use shared_proto::{Channel, Workspace};
 pub fn router(app: App) -> Router {
+    crate::push::start(app.clone());
     Router::new()
+        .route(
+            "/api/v1/users/me/notifications/ws",
+            get(crate::ws::notifications),
+        )
+        .route(
+            "/api/v1/users/me/devices/{id}",
+            axum::routing::put(crate::push::register).delete(crate::push::unregister),
+        )
         .route("/health", get(|| async { Json(json!({"status":"ok"})) }))
         .route("/api/v1/auth/register", post(register))
         .route("/api/v1/auth/login", post(login))

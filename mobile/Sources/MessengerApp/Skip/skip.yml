@@ -6,3 +6,6 @@ build:
     - block: 'dependencies'
       contents:
         - 'implementation("net.java.dev.jna:jna:5.17.0@aar")'
+
+        - 'implementation(platform("com.google.firebase:firebase-bom:35.2.0"))'
+        - 'implementation("com.google.firebase:firebase-messaging")'

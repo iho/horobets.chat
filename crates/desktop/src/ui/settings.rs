@@ -18,6 +18,15 @@ pub fn render(
             .flex_col()
             .gap_4()
     };
+    let notification_enabled = this.pane_sizes.notifications_enabled;
+    let notifications=card()
+        .child(div().text_lg().font_weight(FontWeight::SEMIBOLD).child("Notifications"))
+        .child(muted(this.notification_status.clone()))
+        .child(secondary_button("enable-notifications").label(if notification_enabled {"Check permission"}else{"Enable notifications"})
+            .on_click(cx.listener(|this,_,_,cx|this.enable_notifications(cx))))
+        .when(notification_enabled,|v|v.child(secondary_button("disable-notifications").label("Turn off notifications")
+            .on_click(cx.listener(|this,_,_,cx|{this.pane_sizes.notifications_enabled=false;this.notification_status="Notifications are off".into();this.save_pane_sizes(cx);}))))
+        .child(muted("Desktop alerts arrive while the app is running. Open the packaged app to use macOS Notification Center."));
     let profile = card()
         .child(
             div()
@@ -143,7 +152,7 @@ pub fn render(
         .bg(rgb(colors.panel))
         .child(
             div()
-                .h(px(68.))
+                .h(px(CHAT_HEADER_HEIGHT))
                 .flex_shrink_0()
                 .px_6()
                 .flex()
@@ -212,6 +221,7 @@ pub fn render(
                                     .child(this.snapshot.notice.clone().unwrap_or_default()),
                             )
                         })
+                        .child(notifications)
                         .child(profile)
                         .child(appearance),
                 ),

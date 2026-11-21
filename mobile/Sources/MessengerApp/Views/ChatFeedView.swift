@@ -21,27 +21,32 @@ struct ChatFeedView: View {
             ComposerView(core: core, thread: false)
         }
         .navigationTitle(channel.map { core.label($0) } ?? "Conversation").compactTitle()
+        .toolbar {
+            ToolbarItemGroup(placement: .primaryAction) {
+                Button { searching.toggle(); if !searching { search = "" } } label: {
+                    Label("Search messages", systemImage: "magnifyingglass").labelStyle(.iconOnly).accessibilityLabel("Search messages")
+                }
+                Menu {
+                    Button("Pinned messages") { core.panel = .pins }
+                    if let channel, core.canEdit(channel) { Button("Edit channel") { core.panel = .channel } }
+                    if core.canManageMembers { Button("Manage members") { core.panel = .members } }
+                    Button("Workspace & people") { core.panel = .workspace }
+                    Button("Refresh") { core.command("refresh") }
+                } label: { Label("Conversation details", systemImage: "ellipsis").labelStyle(.iconOnly).accessibilityLabel("Conversation details") }
+            }
+        }
         .onChange(of: search) { _, value in core.command("search", payload: value) }
         .onAppear { if core.snapshot.channel != channelId { core.selectChannel(channelId) } }
         .onChange(of: channelId) { _, value in search = ""; if core.snapshot.channel != value { core.selectChannel(value) } }
     }
     private var conversationHeader: some View {
-        HStack(spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text(channel?.isSaved == true ? "Private notes and files · only you" : channel?.topic ?? (channel?.isPrivate == true ? "Private conversation" : "Team conversation"))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                Text(core.snapshot.channelMembers.count == 1 ? "1 member" : "\(core.snapshot.channelMembers.count) members").font(.caption2).foregroundStyle(.secondary)
-            }
+        HStack(spacing: ChatLayout.gap) {
+            Text(channel?.isSaved == true ? "Private notes and files · only you" : channel?.topic ?? (channel?.isPrivate == true ? "Private conversation" : "Team conversation"))
+                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
             Spacer(minLength: 0)
-            Button("Search") { searching.toggle(); if !searching { search = "" } }.font(.caption)
-            Menu("Details") {
-                Button("Pinned messages") { core.panel = .pins }
-                if let channel, core.canEdit(channel) { Button("Edit channel") { core.panel = .channel } }
-                if core.canManageMembers { Button("Manage members") { core.panel = .members } }
-                Button("Workspace & people") { core.panel = .workspace }
-                Button("Refresh") { core.command("refresh") }
-            }.font(.subheadline)
-        }.padding(.horizontal, 16).padding(.vertical, 10).background(Color.primary.opacity(0.035))
+            Text(core.snapshot.channelMembers.count == 1 ? "1 member" : "\(core.snapshot.channelMembers.count) members")
+                .font(.caption).foregroundStyle(.secondary).fixedSize()
+        }.padding(.horizontal, ChatLayout.gutter).padding(.vertical, 6)
     }
     private var searchResults: some View {
         List(core.snapshot.searchResults) { message in
@@ -77,14 +82,14 @@ struct ConversationFeed: View {
                                 Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
                                 Text(MessageText.day(message.message.createdAt)).font(.caption).foregroundStyle(.secondary).fixedSize()
                                 Rectangle().fill(Color.primary.opacity(0.12)).frame(height: 1)
-                            }.padding(.vertical, 18)
+                            }.padding(.vertical, 8)
                         }
                         MessageRow(core: core, cached: message, thread: thread,
                             grouped: index > 0 && MessageText.grouped(messages[index - 1].message, message.message))
                             .id(message.id)
                     }
                     Color.clear.frame(height: 1).onAppear { following = true }.onDisappear { following = false }
-                }.padding(.horizontal, 16).padding(.bottom, 16)
+                }.padding(.horizontal, ChatLayout.gutter).padding(.bottom, 8)
             }
             .onChange(of: messages.last?.id) { old, value in
                 if let value, old == nil || following || messages.last?.message.userId == core.snapshot.userId { proxy.scrollTo(value, anchor: .bottom) }
@@ -109,31 +114,29 @@ struct MessageRow: View {
     var message: Message { cached.message }
     var sent: Bool { cached.status.label.isEmpty && message.deletedAt == nil }
     var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            if grouped { Color.clear.frame(width: 34, height: 1) }
+        HStack(alignment: .top, spacing: ChatLayout.gap) {
+            if grouped { Color.clear.frame(width: ChatLayout.avatar, height: 1) }
             else {
-                Button { core.openProfile(message.userId) } label: { AvatarView(core: core, userId: message.userId, size: 34) }.buttonStyle(.plain)
+                Button { core.openProfile(message.userId) } label: { AvatarView(core: core, userId: message.userId, size: ChatLayout.avatar)
+                    .frame(width: ChatLayout.target, height: ChatLayout.target).padding(-8) }.buttonStyle(.plain)
             }
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 4) {
                 if !grouped {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Button(core.author(message.userId)) { core.openProfile(message.userId) }.font(.subheadline.bold()).foregroundStyle(.primary)
+                        Button(core.author(message.userId)) { core.openProfile(message.userId) }.font(.subheadline.bold()).foregroundStyle(.primary).lineLimit(1)
                         Text(MessageText.time(message.createdAt)).font(.caption2).foregroundStyle(.secondary)
                         Spacer(minLength: 0)
-                        if sent { Menu("•••") { actions }.accessibilityLabel("Message actions") }
                     }
-                } else if sent {
-                    HStack { Spacer(); Menu("•••") { actions }.font(.caption).accessibilityLabel("Message actions") }.frame(height: 12)
                 }
                 if core.isPinned(cached.id) { Text("📌 Pinned").font(.caption).foregroundStyle(.secondary) }
-                if let topic = message.topicTag { Text(topic).font(.caption).foregroundStyle(.teal) }
+                if let topic = message.topicTag { Text(topic).font(.caption).foregroundStyle(.tint) }
                 if message.deletedAt != nil { Text("Message deleted").italic().foregroundStyle(.secondary) }
                 else {
                     if !message.bodyMd.isEmpty { MarkdownBody(core: core, text: message.bodyMd) }
                     ForEach(core.snapshot.messageAttachments[message.id] ?? []) { attachment in AttachmentView(core: core, attachment: attachment) }
                     if !cached.reactions.isEmpty { reactionPills }
                     if !thread, let count = core.snapshot.replyCounts[cached.id], count > 0 {
-                        Button("\(count) replies →") { core.openThread(cached.id) }.font(.caption.bold())
+                        Button(count == 1 ? "1 reply" : "\(count) replies") { core.openThread(cached.id) }.font(.caption.bold())
                     }
                     if message.editedAt != nil { Text("edited").font(.caption2).foregroundStyle(.secondary) }
                 }
@@ -143,9 +146,18 @@ struct MessageRow: View {
                         if cached.status.failed { Button("Retry") { core.command("retry", payload: cached.id) }.font(.caption) }
                     }
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading)
+            }.padding(.trailing, sent ? ChatLayout.target : 0.0).frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.top, grouped ? 4.0 : 16.0).padding(.bottom, 6)
+        .frame(minHeight: sent ? ChatLayout.target : 0.0, alignment: .top)
+        .overlay(alignment: .topTrailing) {
+            if sent {
+                Menu { actions } label: {
+                    Label("Message actions", systemImage: "ellipsis").labelStyle(.iconOnly).accessibilityLabel("Message actions")
+                        .frame(width: ChatLayout.target, height: ChatLayout.target)
+                }.buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.top, grouped ? 0.0 : 8.0).padding(.bottom, 4)
         .contextMenu { if sent { actions } }
         .sheet(isPresented: $editing) { editSheet }
         .sheet(isPresented: $reacting) { ReactionPicker(core: core, messageId: cached.id, close: { reacting = false }) }
