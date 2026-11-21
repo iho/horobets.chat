@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "low-contrast",
+        "value": "*",
+        "files": [
+          "website/index.html"
+        ],
+        "createdAt": "2026-11-21T08:28:45.867Z",
+        "reason": "Agent verified the rendered external stylesheet: all text color/background combinations have contrast at least 7.28:1; the HTML-only finding does not resolve the stylesheet."
+      }
+    ]
+  }
+}

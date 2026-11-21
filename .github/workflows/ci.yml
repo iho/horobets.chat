@@ -1,0 +1,72 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    name: Rust core / Linux
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all -- --check
+      - name: Test protocol, server, client engine, and mobile bridge
+        run: cargo +stable test --locked -p shared-proto -p messenger-server -p client-core -p messenger-mobile
+      - name: Lint Rust core
+        run: cargo +stable clippy --locked -p shared-proto -p messenger-server -p client-core -p messenger-mobile --all-targets -- -D warnings
+      - name: Check optional S3 storage
+        run: cargo +stable check --locked -p messenger-server --all-features
+
+  native:
+    name: Desktop and Swift bridge / macOS
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install stable --profile minimal --component clippy
+      - name: Ensure Metal compiler is available
+        run: |
+          if ! xcrun --sdk macosx metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+      - name: Test desktop
+        run: cargo +stable test --locked -p messenger-desktop
+      - name: Lint desktop
+        run: cargo +stable clippy --locked -p messenger-desktop --all-targets -- -D warnings
+      - name: Generate native mobile bridge
+        run: ./scripts/build-mobile.sh --host
+      - name: Test shared Swift app and bridge
+        run: swift test --package-path mobile
+
+  website:
+    name: Website
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Check website
+        run: python3 scripts/check-website.py

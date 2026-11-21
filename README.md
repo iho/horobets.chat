@@ -2,6 +2,12 @@
 
 A workspace messenger with a Rust GPUI desktop client and a single-binary backend built with Axum, Tokio, and bundled SQLite. Each workspace has its own WAL database, bounded single-writer actor, read-only connection pool, FTS5 index, and WebSocket broadcast hub. No database service is required.
 
+## Website and CI
+
+The dependency-free [project website](website/README.md) introduces the apps and links to self-hosting instructions. Preview it with `python3 -m http.server 8080 --directory website --bind 127.0.0.1`.
+
+[GitHub Actions CI](.github/workflows/ci.yml) runs formatting, Rust core tests and Clippy on Linux, an optional S3 build check, desktop tests and Clippy on macOS, host Swift/UniFFI tests, and website link/asset checks. Native device builds, signing, and APNs/FCM delivery are outside CI. The separate **Deploy website** workflow publishes to GitHub Pages on manual dispatch after Pages is enabled; see the [hosting instructions](website/README.md#publish-with-github-pages).
+
 ## Run
 
 ```sh
